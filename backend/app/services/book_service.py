@@ -156,7 +156,7 @@ class BookService:
         状态流转: idle / failed / done → crawling
         若已是 crawling 状态则拒绝重复触发。
 
-        当前为占位实现，后续将接入 Celery/ARQ 异步任务队列。
+        启动后台 asyncio 任务执行实际抓取。
         """
         book = await BookService.get_book_detail(db, user, book_id)
 
@@ -164,8 +164,29 @@ class BookService:
             from app.middleware.error_handler import AppException
             raise AppException(status_code=409, detail="该书籍正在抓取中，请勿重复操作")
 
+        if not book.source_url:
+            from app.middleware.error_handler import AppException
+            raise AppException(status_code=400, detail="缺少 source_url，无法抓取")
+
+        # 清除旧章节（重新抓取场景）
+        from sqlalchemy import delete
+        from app.models.chapter import Chapter
+        await db.execute(delete(Chapter).where(Chapter.book_id == book_id))
+
         book.status = "crawling"
+        book.chapter_count = 0
+        book.epub_path = None
         await db.flush()
+
+        # 启动后台抓取
+        from app.services.crawl_manager import start_crawl
+        import asyncio as _asyncio
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            loop = _asyncio.get_event_loop()
+        loop.create_task(start_crawl(book_id))
+
         return book
 
     @staticmethod
@@ -173,21 +194,31 @@ class BookService:
         """
         查询抓取进度。
 
-        返回 status、已抓取章节数、进度百分比等。
-
-        后续爬虫实现后，total_chapters 将从源站获取。
+        优先从内存中的实时进度获取，否则从 DB 读取。
         """
+        from app.services.crawl_manager import get_crawl_progress
         book = await BookService.get_book_detail(db, user, book_id)
 
-        # 计算进度百分比（当有 total_chapters 时）
-        percentage = 0.0
-        total_chapters = None
+        # 优先读取内存中的实时进度
+        progress = get_crawl_progress(book_id)
+        if progress:
+            pct = 0.0
+            if progress["total"] > 0:
+                pct = round(progress["current"] / progress["total"] * 100, 1)
+            return CrawlStatusResponse(
+                status=progress["status"],
+                chapter_count=progress["current"],
+                total_chapters=progress["total"],
+                percentage=pct,
+                error=progress.get("error"),
+            )
 
+        # 无实时进度则从 DB 读取
         return CrawlStatusResponse(
             status=book.status,
             chapter_count=book.chapter_count,
-            total_chapters=total_chapters,
-            percentage=percentage,
+            total_chapters=book.chapter_count if book.status == "done" else None,
+            percentage=100.0 if book.status == "done" else 0.0,
         )
 
 
@@ -201,5 +232,6 @@ def book_to_response(book: Book) -> BookResponse:
         status=book.status,
         chapter_count=book.chapter_count,
         has_epub=book.epub_path is not None and book.epub_path != "",
+        has_txt=book.txt_path is not None and book.txt_path != "",
         added_at=book.added_at,
     )

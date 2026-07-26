@@ -20,7 +20,12 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7      # Refresh Token 7 天
 
     # CORS
-    cors_origins: list[str] = ["http://localhost:5173"]
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+    ]
 
     class Config:
         # 自动从 backend/.env 加载

@@ -66,6 +66,11 @@ class User(Base):
         back_populates="user",
         lazy="selectin",
     )
+    crawl_sources: Mapped[list["CrawlSource"]] = relationship(
+        "CrawlSource",
+        back_populates="user",
+        lazy="selectin",
+    )
 
     def __repr__(self) -> str:
         return f"<User(id={self.id!r}, email={self.email!r})>"

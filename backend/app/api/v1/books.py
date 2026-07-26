@@ -6,25 +6,50 @@ POST   /api/v1/books                → 添加书籍
 DELETE /api/v1/books/{book_id}      → 删除书籍
 GET    /api/v1/books/{book_id}      → 书籍详情
 
-GET    /api/v1/search?q=&page=1    → 在线搜索
+GET    /api/v1/search?q=&page=1    → 在线搜索（书架内 + 外部源站）
+GET    /api/v1/sources              → 获取可用源站列表
 
 POST   /api/v1/books/{book_id}/crawl        → 触发抓取
 GET    /api/v1/books/{book_id}/crawl-status → 查询抓取进度
 GET    /api/v1/books/{book_id}/download     → 下载 .epub
+POST   /api/v1/crawl/check-url              → 检查 URL 连通性
+
+GET    /api/v1/crawl-sources                → 列出自定义源站
+POST   /api/v1/crawl-sources                → 创建自定义源站
+GET    /api/v1/crawl-sources/{id}           → 获取自定义源站详情
+PUT    /api/v1/crawl-sources/{id}           → 更新自定义源站
+DELETE /api/v1/crawl-sources/{id}           → 删除自定义源站
+POST   /api/v1/crawl-sources/test           → 测试自定义规则
 """
 
+import os
 from math import ceil
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.middleware.error_handler import AppException
 from app.models.user import User
-from app.schemas.book import BookCreateRequest, BookResponse, CrawlStatusResponse
+from app.schemas.book import (
+    BookCreateRequest,
+    BookResponse,
+    CrawlSourceCreate,
+    CrawlSourceResponse,
+    CrawlSourceTestRequest,
+    CrawlSourceTestResponse,
+    CrawlSourceUpdate,
+    CrawlStatusResponse,
+    SearchResultItem,
+    SourceItem,
+)
 from app.schemas.common import ApiResponse, PaginationMeta
 from app.services.book_service import BookService, book_to_response
+from app.services.crawl_source_service import CrawlSourceService
+from app.services.crawler_service import crawler
+from app.services.search_service import search_service
 from app.utils.deps import get_current_user
 
 router = APIRouter(tags=["书架 / 搜索 / 抓取"])
@@ -112,7 +137,7 @@ async def delete_book(
 @router.get(
     "/search",
     response_model=ApiResponse[list[BookResponse]],
-    summary="在线搜索小说",
+    summary="在线搜索小说（书架内）",
 )
 async def search_books(
     q: str = Query(..., min_length=1, description="搜索关键词"),
@@ -124,7 +149,7 @@ async def search_books(
     """
     在已有书架中按书名模糊搜索。
 
-    注意: v1.0 暂为书架内搜索，v1.1 将接入外部搜索引擎实现全网搜索。
+    注意: v1.0 暂为书架内搜索，v2.0 使用 /api/v1/search/external 进行全网搜索。
     """
     books, total = await BookService.search_books(db, current_user, q, page, page_size)
     items = [book_to_response(b) for b in books]
@@ -138,6 +163,72 @@ async def search_books(
             total_pages=ceil(total / page_size) if total > 0 else 0,
         ),
     )
+
+
+@router.get(
+    "/search/external",
+    response_model=ApiResponse[list[SearchResultItem]],
+    summary="外部源站在线搜索小说",
+)
+async def search_books_external(
+    q: str = Query(..., min_length=1, description="搜索关键词"),
+    source_id: int | None = Query(default=None, description="指定源站ID，不传则搜索所有源站"),
+    search_limit: int = Query(default=30, ge=1, le=100, description="每个源站最大结果数"),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    在全网小说源站中搜索小说。
+
+    支持指定源站搜索或遍历所有已配置的源站。
+    返回合并去重后的搜索结果，包括书名、作者、源站名称、详情页URL等信息。
+    """
+    results = await search_service.search(
+        keyword=q,
+        source_id=source_id,
+        search_limit=search_limit,
+    )
+    items = [
+        SearchResultItem(
+            title=r.title,
+            author=r.author,
+            source_url=r.source_url,
+            source_name=r.source_name,
+            source_id=r.source_id,
+            category=r.category,
+            word_count=r.word_count,
+            status=r.status,
+            latest_chapter=r.latest_chapter,
+            last_update_time=r.last_update_time,
+        )
+        for r in results
+    ]
+    return ApiResponse.ok(
+        data=items,
+        meta=PaginationMeta(
+            page=1,
+            page_size=len(items),
+            total=len(items),
+            total_pages=1,
+        ),
+    )
+
+
+# ============================================================
+# 源站列表
+# ============================================================
+
+@router.get(
+    "/sources",
+    response_model=ApiResponse[list[SourceItem]],
+    summary="获取可用源站列表",
+)
+async def list_sources(
+    current_user: User = Depends(get_current_user),
+):
+    """返回所有已配置的小说源站信息"""
+    sources = crawler.list_sources()
+    items = [SourceItem(**s) for s in sources]
+    return ApiResponse.ok(data=items)
 
 
 # ============================================================
@@ -154,7 +245,7 @@ async def crawl_book(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """触发对指定小说的内容抓取（异步任务占位）"""
+    """触发对指定小说的内容抓取（后台异步执行）"""
     book = await BookService.trigger_crawl(db, current_user, book_id)
     return ApiResponse.ok(data=book_to_response(book))
 
@@ -169,31 +260,188 @@ async def get_crawl_status(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """查询指定小说的抓取进度"""
+    """查询指定小说的实时抓取进度"""
     status = await BookService.get_crawl_status(db, current_user, book_id)
     return ApiResponse.ok(data=status)
 
 
 @router.get(
     "/books/{book_id}/download",
-    summary="下载 .epub 文件",
+    summary="下载电子书文件",
 )
 async def download_book(
     book_id: str,
+    format: str = Query(default="epub", regex="^(epub|txt)$", description="下载格式：epub 或 txt"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    下载已生成的 .epub 电子书文件。
+    下载已生成的电子书文件。
 
-    当前为占位实现，epub_path 为空时返回 404。
-    后续爬虫模块实现后将返回实际文件。
+    支持 EPUB 和 TXT 两种格式，通过 format 参数指定。
+    如果对应格式文件不存在则返回 404。
     """
     book = await BookService.get_book_detail(db, current_user, book_id)
 
-    if not book.epub_path:
-        raise AppException(status_code=404, detail="该书籍尚未生成 .epub 文件，请先抓取")
+    if format == "txt":
+        if not book.txt_path:
+            raise AppException(status_code=404, detail="该书籍尚未生成 TXT 文件，请先抓取")
+        file_path = book.txt_path
+        if not os.path.exists(file_path):
+            raise AppException(status_code=404, detail="TXT 文件已被清理，请重新抓取")
+        filename = f"{book.title}-{book.author}.txt"
+        media_type = "text/plain; charset=utf-8"
+    else:
+        if not book.epub_path:
+            raise AppException(status_code=404, detail="该书籍尚未生成 EPUB 文件，请先抓取")
+        file_path = book.epub_path
+        if not os.path.exists(file_path):
+            raise AppException(status_code=404, detail="EPUB 文件已被清理，请重新抓取")
+        filename = f"{book.title}-{book.author}.epub"
+        media_type = "application/epub+zip"
 
-    # TODO: 根据实际存储路径返回文件
-    # return FileResponse(book.epub_path, filename=f"{book.title}-{book.author}.epub")
-    raise AppException(status_code=501, detail="下载功能开发中")
+    return FileResponse(
+        file_path,
+        filename=filename,
+        media_type=media_type,
+    )
+
+
+# ============================================================
+# URL 连通性预检
+# ============================================================
+
+class CheckUrlRequest(BaseModel):
+    url: str = Field(..., min_length=1, max_length=2048, description="要检查的小说源站 URL")
+
+
+class CheckUrlResponse(BaseModel):
+    reachable: bool
+    status_code: int | None
+    content_length: int
+    error_message: str | None
+    suggested_fix: str | None
+
+
+@router.post(
+    "/crawl/check-url",
+    response_model=ApiResponse[CheckUrlResponse],
+    summary="检查源站 URL 连通性",
+)
+async def check_url(
+    body: CheckUrlRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    在触发抓取之前检查源站 URL 是否可达。
+
+    返回连通性检测结果和建议，帮助用户判断 URL 是否有效。
+    """
+    result = await crawler.check_connectivity(body.url)
+    return ApiResponse.ok(data=CheckUrlResponse(
+        reachable=result.reachable,
+        status_code=result.status_code,
+        content_length=result.content_length,
+        error_message=result.error_message,
+        suggested_fix=result.suggested_fix,
+    ))
+
+
+# ============================================================
+# 自定义抓取源站 CRUD
+# ============================================================
+
+crawl_source_router = APIRouter(prefix="/crawl-sources", tags=["自定义源站"])
+
+
+@crawl_source_router.get(
+    "",
+    response_model=ApiResponse[list[CrawlSourceResponse]],
+    summary="列出自定义源站",
+)
+async def list_crawl_sources(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取当前用户创建的所有自定义源站规则"""
+    items = await CrawlSourceService.list_sources(db, current_user)
+    return ApiResponse.ok(data=items)
+
+
+@crawl_source_router.post(
+    "",
+    response_model=ApiResponse[CrawlSourceResponse],
+    summary="创建自定义源站",
+)
+async def create_crawl_source(
+    data: CrawlSourceCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """创建一条自定义源站抓取规则"""
+    source = await CrawlSourceService.create(db, current_user, data)
+    return ApiResponse.ok(data=source)
+
+
+@crawl_source_router.get(
+    "/{source_id}",
+    response_model=ApiResponse[CrawlSourceResponse],
+    summary="获取自定义源站详情",
+)
+async def get_crawl_source(
+    source_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取单个自定义源站规则详情"""
+    source = await CrawlSourceService.get(db, current_user, source_id)
+    return ApiResponse.ok(data=source)
+
+
+@crawl_source_router.put(
+    "/{source_id}",
+    response_model=ApiResponse[CrawlSourceResponse],
+    summary="更新自定义源站",
+)
+async def update_crawl_source(
+    source_id: int,
+    data: CrawlSourceUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """更新自定义源站抓取规则"""
+    source = await CrawlSourceService.update(db, current_user, source_id, data)
+    return ApiResponse.ok(data=source)
+
+
+@crawl_source_router.delete(
+    "/{source_id}",
+    response_model=ApiResponse[None],
+    summary="删除自定义源站",
+)
+async def delete_crawl_source(
+    source_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """删除自定义源站规则"""
+    await CrawlSourceService.delete(db, current_user, source_id)
+    return ApiResponse.ok(data=None)
+
+
+@crawl_source_router.post(
+    "/test",
+    response_model=ApiResponse[CrawlSourceTestResponse],
+    summary="测试自定义源站规则",
+)
+async def test_crawl_source(
+    data: CrawlSourceTestRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    测试自定义规则是否能正确解析指定 URL 的章节列表。
+
+    返回章节总数和前 5 条章节信息，帮助用户验证规则配置是否有效。
+    """
+    result = await CrawlSourceService.test_rule(data.url, data.rule_json)
+    return ApiResponse.ok(data=CrawlSourceTestResponse(**result))

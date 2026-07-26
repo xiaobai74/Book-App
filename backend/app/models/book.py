@@ -11,6 +11,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.chapter import Chapter  # 确保 Chapter 模型已注册
 
 
 def _now_utc() -> datetime:
@@ -44,6 +45,10 @@ class Book(Base):
         nullable=True,
     )
     epub_path: Mapped[str | None] = mapped_column(
+        String(1000),
+        nullable=True,
+    )
+    txt_path: Mapped[str | None] = mapped_column(
         String(1000),
         nullable=True,
     )
@@ -83,6 +88,12 @@ class Book(Base):
         "User",
         back_populates="books",
         lazy="selectin",
+    )
+    chapters: Mapped[list["Chapter"]] = relationship(
+        "Chapter",
+        back_populates="book",
+        lazy="selectin",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

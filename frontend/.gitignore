@@ -1,0 +1,23 @@
+# Node 依赖
+node_modules/
+
+# 构建产物
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 环境变量
+.env.local
+.env.*.local
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 锁文件（保留 package-lock.json 以确保可复现构建）
+# yarn.lock
+# pnpm-lock.yaml
