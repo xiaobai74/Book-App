@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>注册 · 小说管理App</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="auth-shell">
+  <div class="auth-card">
+    <h1>注册</h1>
+    <p class="lead">创建你的私人书架账号</p>
+    <form id="reg-form" style="display:flex;flex-direction:column;gap:18px">
+      <div class="field">
+        <label for="reg-email">邮箱</label>
+        <input class="input" id="reg-email" type="email" placeholder="请输入邮箱地址" required autocomplete="email" />
+      </div>
+      <div class="field">
+        <label for="reg-password">密码</label>
+        <input class="input" id="reg-password" type="password" placeholder="8-64位，需包含字母和数字" required minlength="8" />
+        <span class="field-help">密码长度 8-64 位，需包含字母和数字</span>
+      </div>
+      <div class="field">
+        <label for="reg-confirm">确认密码</label>
+        <input class="input" id="reg-confirm" type="password" placeholder="请再次输入密码" required />
+      </div>
+      <p class="field-error" id="reg-error" style="display:none"></p>
+      <button class="btn btn-primary" type="submit" style="width:100%;justify-content:center">注册</button>
+    </form>
+    <p style="margin-top:20px;font-size:13px;color:var(--muted);text-align:center">
+      已有账号？<a href="login.html">去登录</a>
+    </p>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+document.getElementById('reg-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var email = document.getElementById('reg-email').value.trim();
+  var password = document.getElementById('reg-password').value;
+  var confirm = document.getElementById('reg-confirm').value;
+  var errEl = document.getElementById('reg-error');
+
+  if (password.length < 8 || password.length > 64) { errEl.textContent = '密码长度需为 8-64 位'; errEl.style.display = ''; return; }
+  if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) { errEl.textContent = '密码需包含字母和数字'; errEl.style.display = ''; return; }
+  if (password !== confirm) { errEl.textContent = '两次输入的密码不一致'; errEl.style.display = ''; return; }
+
+  var users = getUsers();
+  if (users.find(function(u) { return u.email === email; })) { errEl.textContent = '该邮箱已注册'; errEl.style.display = ''; return; }
+
+  users.push({ email: email, password: password });
+  saveUsers(users);
+  errEl.style.display = 'none';
+  saveCurrentUser({ email: email });
+  window.location.href = 'shelf.html';
+});
+</script>
+</body>
+</html>

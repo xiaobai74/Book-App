@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>书籍详情 · 小说管理App</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<header class="topnav" data-od-id="topnav">
+  <div class="container topnav-inner">
+    <a class="logo" href="shelf.html">
+      <svg style="width:20px;height:20px;vertical-align:-3px;margin-right:6px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+      我的书架
+    </a>
+    <form class="search-box" onsubmit="var q=document.getElementById('global-search-input').value.trim();if(q)window.location.href='search.html?q='+encodeURIComponent(q);return false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
+      <input type="search" id="global-search-input" placeholder="在书架中按书名搜索…" />
+    </form>
+    <div class="nav-right">
+      <a class="btn btn-ghost btn-sm" href="settings.html">设置</a>
+      <span class="user-avatar" id="user-avatar-display">U</span>
+      <button class="btn btn-ghost btn-sm" onclick="doLogout()">退出</button>
+    </div>
+  </div>
+</header>
+
+<section class="section" data-od-id="book-detail">
+  <div class="container">
+    <a class="btn btn-ghost btn-sm" href="shelf.html" style="margin-bottom:16px">← 返回书架</a>
+
+    <div class="card" style="margin-bottom:24px" id="detail-card">
+      <div class="detail-header">
+        <div style="flex:1">
+          <h1 id="detail-title">—</h1>
+          <p class="lead" style="margin-top:6px">作者：<span id="detail-author">—</span></p>
+          <p class="meta" id="detail-source-url" style="display:none;margin-top:2px">来源：<a id="detail-source-link" href="#" target="_blank"></a></p>
+          <div class="detail-meta" style="margin-top:12px">
+            <span class="meta">添加时间：<span id="detail-added">—</span></span>
+            <div class="row" style="gap:8px"><span class="meta">状态：</span><span class="badge badge-idle" id="detail-status">—</span></div>
+            <span class="meta">章节数：<span id="detail-chapters" class="num">0</span></span>
+          </div>
+          <div class="detail-actions">
+            <button class="btn btn-primary" id="btn-crawl">抓取小说内容</button>
+            <button class="btn btn-download" id="btn-download" disabled>下载 .epub</button>
+            <span class="meta" id="download-filename" style="display:none;align-self:center"></span>
+            <a class="btn btn-secondary" href="shelf.html">返回书架</a>
+          </div>
+          <div id="crawl-progress" style="display:none;margin-top:16px">
+            <div class="row-between" style="margin-bottom:8px">
+              <span class="meta">抓取进度：<span id="crawl-progress-text">0/0 章</span></span>
+              <span class="meta num" id="crawl-progress-pct">0%</span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill" id="crawl-progress-bar" style="width:0%"></div></div>
+          </div>
+        </div>
+        <div class="book-cover" id="detail-cover"><span class="cover-spine"></span><span class="cover-title" id="detail-cover-title">—</span><span class="cover-author" id="detail-cover-author">—</span></div>
+      </div>
+    </div>
+
+    <div class="card" id="chapter-list-card" style="display:none">
+      <h3 style="margin-bottom:16px">章节目录</h3>
+      <div id="chapter-list"></div>
+    </div>
+
+    <div class="card empty-state" id="detail-not-found" style="display:none">
+      <p>该书籍不存在或已被删除</p>
+      <a class="btn btn-primary" href="shelf.html" style="margin-top:16px">返回书架</a>
+    </div>
+  </div>
+</section>
+
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+<script>
+var user = requireAuthOrDemo();
+initAvatar(user);
+
+var params = new URLSearchParams(window.location.search);
+var bookId = params.get('id');
+if (!bookId) { window.location.href = 'shelf.html'; }
+
+var shelf = getShelf();
+var book = shelf.find(function(b) { return b.id === bookId; });
+if (!book) { document.getElementById('detail-card').style.display = 'none'; document.getElementById('chapter-list-card').style.display = 'none'; document.getElementById('detail-not-found').style.display = ''; } else { renderBookDetail(); }
+
+var _crawlTimer = null;
+
+function renderBookDetail() {
+  document.getElementById('detail-title').textContent = book.title;
+  document.getElementById('detail-author').textContent = book.author;
+  document.getElementById('detail-cover-title').textContent = book.title;
+  document.getElementById('detail-cover-author').textContent = book.author;
+
+  var urlEl = document.getElementById('detail-source-url');
+  var linkEl = document.getElementById('detail-source-link');
+  if (book.sourceUrl) { urlEl.style.display = ''; linkEl.href = book.sourceUrl; linkEl.textContent = book.sourceUrl; }
+  else { urlEl.style.display = 'none'; }
+
+  document.getElementById('detail-cover').className = 'book-cover ' + coverClass(book.title);
+  document.getElementById('detail-added').textContent = formatDate(book.addedAt);
+  document.getElementById('detail-chapters').textContent = book.chapterCount;
+
+  var statusMap = { idle: ['badge-idle','待抓取'], crawling: ['badge-crawl','抓取中'], done: ['badge-done','已完成'], failed: ['badge-failed','抓取失败'] };
+  var s = statusMap[book.status] || statusMap.idle;
+  var se = document.getElementById('detail-status'); se.className = 'badge ' + s[0]; se.textContent = s[1];
+
+  document.getElementById('btn-crawl').disabled = book.status === 'crawling';
+  document.getElementById('btn-crawl').textContent = book.status === 'done' ? '重新抓取' : '抓取小说内容';
+  document.getElementById('btn-download').disabled = book.status !== 'done';
+  var fnEl = document.getElementById('download-filename');
+  if (book.status === 'done') { fnEl.style.display = ''; fnEl.textContent = '《' + book.title + '》- ' + book.author + '.epub'; }
+  else { fnEl.style.display = 'none'; }
+
+  document.getElementById('crawl-progress').style.display = book.status === 'crawling' ? '' : 'none';
+
+  var cc = document.getElementById('chapter-list-card');
+  var cl = document.getElementById('chapter-list');
+  if (book.chapters && book.chapters.length > 0) {
+    cc.style.display = '';
+    cl.innerHTML = book.chapters.map(function(ch, i) { return '<div class="chapter-row"><span class="ch-num">第 ' + (i+1) + ' 章</span><span class="ch-title">' + escHtml(ch.title) + '</span><span class="meta">' + (ch.wordCount || '—') + ' 字</span></div>'; }).join('');
+  } else { cc.style.display = 'none'; cl.innerHTML = ''; }
+}
+
+document.getElementById('btn-crawl').addEventListener('click', function() {
+  if (!book || book.status === 'crawling') return;
+  book.status = 'crawling'; book.chapterCount = 0; book.chapters = [];
+  shelf = getShelf(); var idx = shelf.findIndex(function(b) { return b.id === book.id; }); if (idx >= 0) shelf[idx] = book; saveShelf(shelf);
+
+  document.getElementById('crawl-progress').style.display = '';
+  document.getElementById('crawl-progress-text').textContent = '0/0 章';
+  document.getElementById('crawl-progress-pct').textContent = '0%';
+  document.getElementById('crawl-progress-bar').style.width = '0%';
+  document.getElementById('btn-crawl').disabled = true;
+  document.getElementById('btn-download').disabled = true;
+  document.getElementById('detail-status').className = 'badge badge-crawl'; document.getElementById('detail-status').textContent = '抓取中';
+  document.getElementById('chapter-list-card').style.display = 'none';
+
+  var total = Math.floor(Math.random() * 80) + 20;
+  var current = 0;
+  var fakeTitles = ['序章 · 新的开始','神秘的来信','初入江湖','风云突变','暗流涌动','秘境探险','不速之客','绝处逢生','破而后立','名扬天下','归途漫漫','故人重逢','山雨欲来','决战前夕','巅峰对决','尘埃落定','新的征程','狭路相逢','拨云见日','柳暗花明'];
+  if (_crawlTimer) clearInterval(_crawlTimer);
+
+  _crawlTimer = setInterval(function() {
+    current++;
+    book.chapterCount = current;
+    book.chapters.push({ title: fakeTitles[current % fakeTitles.length] + (current > fakeTitles.length ? '（续' + (Math.floor(current/fakeTitles.length)+1) + '）' : ''), wordCount: Math.floor(Math.random() * 5000) + 2000 });
+    var pct = Math.round((current / total) * 100);
+    document.getElementById('crawl-progress-text').textContent = current + '/' + total + ' 章';
+    document.getElementById('crawl-progress-pct').textContent = pct + '%';
+    document.getElementById('crawl-progress-bar').style.width = pct + '%';
+    document.getElementById('detail-chapters').textContent = current;
+    shelf = getShelf(); var i = shelf.findIndex(function(b) { return b.id === book.id; }); if (i >= 0) shelf[i] = book; saveShelf(shelf);
+
+    if (current >= total) {
+      clearInterval(_crawlTimer); _crawlTimer = null;
+      var success = Math.random() > 0.15;
+      book.status = success ? 'done' : 'failed';
+      shelf = getShelf(); i = shelf.findIndex(function(b) { return b.id === book.id; }); if (i >= 0) shelf[i] = book; saveShelf(shelf);
+      var sm = success ? ['badge-done','已完成'] : ['badge-failed','抓取失败'];
+      document.getElementById('detail-status').className = 'badge ' + sm[0]; document.getElementById('detail-status').textContent = sm[1];
+      document.getElementById('btn-crawl').disabled = false;
+      document.getElementById('btn-crawl').textContent = '重新抓取';
+      document.getElementById('btn-download').disabled = !success;
+      if (success) {
+        document.getElementById('chapter-list-card').style.display = '';
+        document.getElementById('chapter-list').innerHTML = book.chapters.map(function(ch, i) { return '<div class="chapter-row"><span class="ch-num">第 ' + (i+1) + ' 章</span><span class="ch-title">' + escHtml(ch.title) + '</span><span class="meta">' + ch.wordCount + ' 字</span></div>'; }).join('');
+        document.getElementById('download-filename').style.display = '';
+        document.getElementById('download-filename').textContent = '《' + book.title + '》- ' + book.author + '.epub';
+        showToast('抓取完成！.epub 文件已生成');
+      } else { showToast('抓取失败，请检查网络后重试'); }
+    }
+  }, 200);
+});
+
+document.getElementById('btn-download').addEventListener('click', function() {
+  if (!book || book.status !== 'done') return;
+  showToast('《' + book.title + '》- ' + book.author + '.epub 开始下载');
+});
+</script>
+</body>
+</html>

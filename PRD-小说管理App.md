@@ -1,8 +1,8 @@
-# 日常小说管理App — 产品需求文档（PRD）
+# 日常小说管理App -- 产品需求文档（PRD）
 
-> **版本**：v1.0  
-> **作者**：资深产品经理  
-> **日期**：2026-07-21  
+> **版本**：v1.0
+> **作者**：资深产品经理
+> **日期**：2026-07-21
 > **状态**：草案
 
 ---
@@ -108,43 +108,44 @@
 
 | 约束 | 说明 |
 |------|------|
-| **Web 端优先** | v1.0 目标平台为桌面浏览器（≥ 1280px 宽）。同时采用响应式布局，确保 768px（平板）和 375px（手机）下可正常使用 |
+| **Web 端优先** | v1.0 目标平台为桌面浏览器（>= 1280px 宽）。同时采用响应式布局，确保 768px（平板）和 375px（手机）下可正常使用 |
 | **移动端预留** | CSS 使用 rem/em 相对单位，布局使用 Flexbox + Grid，为后续 React Native / Flutter 迁移降低适配成本 |
 | **断点策略** | `< 768px` 单列布局；`768-1024px` 双列布局；`> 1024px` 多列布局（搜索页最多 4 列卡片） |
 
 ### 3.3 性能
 
-- 首屏加载 ≤ 2s（Lighthouse Performance ≥ 90）
-- 搜索接口响应 ≤ 3s
-- 单本小说抓取（假设 500 章）耗时 ≤ 5 分钟
+- 首屏加载 <= 2s（Lighthouse Performance >= 90）
+- 搜索接口响应 <= 3s
+- 单本小说抓取（假设 500 章）耗时 <= 5 分钟
 
 ### 3.4 安全
 
 - 所有 API 必须通过 HTTPS 传输
 - API 请求携带 JWT Authorization Header
 - 用户输入统一在后端做 XSS 清洗
-- 爬虫模块设置合理频率限制（单源站请求间隔 ≥ 2s），避免被封 IP
+- 爬虫模块设置合理频率限制（单源站请求间隔 >= 2s），避免被封 IP
 
 ---
 
 ## 4. 信息架构与页面结构
 
 ```
-├── /login              → 登录页
-├── /register           → 注册页
-├── /shelf              → 书架首页（默认登录后跳转）
+/          -- 根路径重定向到 /shelf
+├── /login              -- 登录页
+├── /register           -- 注册页
+├── /shelf              -- 书架首页（默认登录后跳转）
 │   ├── 顶栏：Logo + 搜索框 + 用户头像/退出
 │   ├── 列表区：小说卡片列表
 │   └── 添加按钮：手动添加小说
-├── /search?q=xxx       → 搜索结果页
+├── /search?q=xxx       -- 搜索结果页
 │   ├── 搜索框（可修改关键词重新搜索）
 │   ├── 结果卡片列表（分页）
 │   └── 每张卡片可"加入书架"或"抓取"
-├── /book/:id           → 小说详情页
+├── /book/:id           -- 小说详情页
 │   ├── 基本信息：书名、作者、添加时间
 │   ├── 操作区：抓取按钮、下载 .epub 按钮
 │   └── 章节列表（抓取后可预览）
-└── /settings           → 个人设置（修改密码）
+└── /settings           -- 个人设置（修改密码）
 ```
 
 ---
@@ -166,66 +167,461 @@
 
 ## 6. 数据库表设计（草案）
 
-```sql
--- 用户表
-CREATE TABLE users (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email       TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at  TIMESTAMPTZ
-);
+```python
+# ============================================================
+# app/models/user.py  -- 用户表
+# ============================================================
+import uuid
+from datetime import UTC, datetime
+from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.database import Base
 
--- 小说书架表
-CREATE TABLE books (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id     UUID NOT NULL REFERENCES users(id),
-    title       TEXT NOT NULL,
-    author      TEXT NOT NULL DEFAULT '未知',
-    source_url  TEXT,                              -- 源网站 URL
-    epub_path   TEXT,                              -- 生成的 .epub 文件路径
-    status      TEXT NOT NULL DEFAULT 'idle'       -- idle | crawling | done | failed
-        CHECK (status IN ('idle', 'crawling', 'done', 'failed')),
-    chapter_count INTEGER DEFAULT 0,
-    added_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at  TIMESTAMPTZ
-);
 
-CREATE INDEX idx_books_user_id ON books(user_id) WHERE deleted_at IS NULL;
+def _now_utc() -> datetime:
+    """返回当前 UTC 时间"""
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    email: Mapped[str] = mapped_column(
+        String(255), unique=True, nullable=False
+    )
+    password_hash: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=_now_utc,
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=_now_utc,
+        server_default=func.now(),
+        onupdate=_now_utc,
+        nullable=False,
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
+
+    # 关联: 用户拥有的所有书籍(只含未删除的)
+    books: Mapped[list["Book"]] = relationship(
+        "Book",
+        back_populates="user",
+        lazy="selectin",
+        primaryjoin="and_(User.id == Book.user_id, "
+                    "Book.deleted_at.is_(None))",
+    )
+    refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
+        "RefreshToken",
+        back_populates="user",
+        lazy="selectin",
+    )
+
+
+# ============================================================
+# app/models/book.py  -- 书架表
+# ============================================================
+class Book(Base):
+    __tablename__ = "books"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(
+        String(500), nullable=False
+    )
+    author: Mapped[str] = mapped_column(
+        String(255), nullable=False,
+        default="未知", server_default="未知",
+    )
+    source_url: Mapped[str | None] = mapped_column(nullable=True)
+    epub_path: Mapped[str | None] = mapped_column(
+        String(1000), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(10), nullable=False,
+        default="idle", server_default="idle",
+        # idle | crawling | done | failed
+    )
+    chapter_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=_now_utc,
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=_now_utc,
+        server_default=func.now(),
+        onupdate=_now_utc,
+        nullable=False,
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
+
+    # 关联: 所属用户
+    user: Mapped["User"] = relationship(
+        "User", back_populates="books", lazy="selectin",
+    )
+
+
+# ============================================================
+# app/models/refresh_token.py  -- 刷新令牌表
+# ============================================================
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(
+        String(255), unique=True, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=_now_utc,
+        server_default=func.now(),
+        nullable=False,
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
+
+    # 关联: 所属用户
+    user: Mapped["User"] = relationship(
+        "User", back_populates="refresh_tokens", lazy="selectin",
+    )
 ```
 
 ---
 
 ## 7. API 接口设计（草案）
 
+### 7.1 认证路由 `app/api/v1/auth.py`
+
+```python
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_db
+from app.models.user import User
+from app.schemas.auth import (
+    LoginRequest,
+    PasswordChangeRequest,
+    RefreshTokenRequest,
+    RegisterRequest,
+    TokenResponse,
+)
+from app.schemas.common import ApiResponse
+from app.services.auth_service import AuthService
+from app.utils.deps import get_current_user
+
+router = APIRouter(prefix="/auth", tags=["认证"])
+
+
+@router.post(
+    "/register",
+    response_model=ApiResponse[dict],
+    status_code=status.HTTP_201_CREATED,
+    summary="用户注册",
+)
+async def register(
+    data: RegisterRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """POST /api/v1/auth/register -- 注册"""
+    user = await AuthService.register(db, data)
+    return ApiResponse.ok(data={"id": user.id, "email": user.email})
+
+
+@router.post(
+    "/login",
+    response_model=ApiResponse[TokenResponse],
+    summary="用户登录",
+)
+async def login(
+    data: LoginRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """POST /api/v1/auth/login -- 登录"""
+    tokens = await AuthService.login(db, data)
+    return ApiResponse.ok(data=tokens)
+
+
+@router.post(
+    "/refresh",
+    response_model=ApiResponse[TokenResponse],
+    summary="刷新 Token",
+)
+async def refresh_token(
+    data: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """POST /api/v1/auth/refresh -- 刷新 Token（轮转策略）"""
+    tokens = await AuthService.refresh(db, data)
+    return ApiResponse.ok(data=tokens)
+
+
+@router.put(
+    "/password",
+    response_model=ApiResponse[None],
+    summary="修改密码",
+)
+async def change_password(
+    data: PasswordChangeRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """PUT /api/v1/auth/password -- 修改密码（需要登录）"""
+    await AuthService.change_password(db, current_user, data)
+    return ApiResponse.ok(data=None)
 ```
-POST   /api/v1/auth/register      → 注册
-POST   /api/v1/auth/login          → 登录
-POST   /api/v1/auth/refresh        → 刷新 Token
-PUT    /api/v1/auth/password       → 修改密码
 
-GET    /api/v1/books               → 获取书架列表
-POST   /api/v1/books               → 添加小说
-DELETE /api/v1/books/:id           → 删除小说
-GET    /api/v1/books/:id           → 小说详情
+### 7.2 书架路由 `app/api/v1/books.py`
 
-GET    /api/v1/search?q=&page=1    → 在线搜索小说
+```python
+from math import ceil
 
-POST   /api/v1/books/:id/crawl     → 触发抓取
-GET    /api/v1/books/:id/crawl-status → 查询抓取进度
-GET    /api/v1/books/:id/download  → 下载 .epub 文件
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_db
+from app.middleware.error_handler import AppException
+from app.models.user import User
+from app.schemas.book import (
+    BookCreateRequest, BookResponse, CrawlStatusResponse,
+)
+from app.schemas.common import ApiResponse, PaginationMeta
+from app.services.book_service import BookService, book_to_response
+from app.utils.deps import get_current_user
+
+router = APIRouter(tags=["书架 / 搜索 / 抓取"])
+
+
+@router.get(
+    "/books",
+    response_model=ApiResponse[list[BookResponse]],
+    summary="获取书架列表",
+)
+async def list_books(
+    page: int = Query(default=1, ge=1, description="页码"),
+    page_size: int = Query(default=20, ge=1, le=100, description="每页数量"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """GET /api/v1/books -- 获取书架列表，按添加时间倒序"""
+    books, total = await BookService.get_books(
+        db, current_user, page, page_size
+    )
+    items = [book_to_response(b) for b in books]
+    return ApiResponse.ok(
+        data=items,
+        meta=PaginationMeta(
+            page=page,
+            page_size=page_size,
+            total=total,
+            total_pages=ceil(total / page_size) if total > 0 else 0,
+        ),
+    )
+
+
+@router.post(
+    "/books",
+    response_model=ApiResponse[BookResponse],
+    summary="添加书籍",
+)
+async def create_book(
+    data: BookCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """POST /api/v1/books -- 手动添加小说到书架"""
+    book = await BookService.create_book(db, current_user, data)
+    return ApiResponse.ok(data=book_to_response(book))
+
+
+@router.get(
+    "/books/{book_id}",
+    response_model=ApiResponse[BookResponse],
+    summary="查看书籍详情",
+)
+async def get_book(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """GET /api/v1/books/{book_id} -- 小说详情"""
+    book = await BookService.get_book_detail(
+        db, current_user, book_id
+    )
+    return ApiResponse.ok(data=book_to_response(book))
+
+
+@router.delete(
+    "/books/{book_id}",
+    response_model=ApiResponse[None],
+    summary="删除书籍",
+)
+async def delete_book(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """DELETE /api/v1/books/{book_id} -- 软删除小说"""
+    await BookService.delete_book(db, current_user, book_id)
+    return ApiResponse.ok(data=None)
+
+
+@router.get(
+    "/search",
+    response_model=ApiResponse[list[BookResponse]],
+    summary="在线搜索小说",
+)
+async def search_books(
+    q: str = Query(..., min_length=1, description="搜索关键词"),
+    page: int = Query(default=1, ge=1, description="页码"),
+    page_size: int = Query(default=20, ge=1, le=100, description="每页数量"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """GET /api/v1/search?q=&page= -- 在书架中按书名模糊搜索"""
+    books, total = await BookService.search_books(
+        db, current_user, q, page, page_size
+    )
+    items = [book_to_response(b) for b in books]
+    return ApiResponse.ok(
+        data=items,
+        meta=PaginationMeta(
+            page=page,
+            page_size=page_size,
+            total=total,
+            total_pages=ceil(total / page_size) if total > 0 else 0,
+        ),
+    )
+
+
+@router.post(
+    "/books/{book_id}/crawl",
+    response_model=ApiResponse[BookResponse],
+    summary="触发抓取",
+)
+async def crawl_book(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """POST /api/v1/books/{book_id}/crawl -- 触发内容抓取"""
+    book = await BookService.trigger_crawl(db, current_user, book_id)
+    return ApiResponse.ok(data=book_to_response(book))
+
+
+@router.get(
+    "/books/{book_id}/crawl-status",
+    response_model=ApiResponse[CrawlStatusResponse],
+    summary="查询抓取进度",
+)
+async def get_crawl_status(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """GET /api/v1/books/{book_id}/crawl-status -- 查询抓取进度"""
+    status = await BookService.get_crawl_status(
+        db, current_user, book_id
+    )
+    return ApiResponse.ok(data=status)
+
+
+@router.get(
+    "/books/{book_id}/download",
+    summary="下载 .epub 文件",
+)
+async def download_book(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """GET /api/v1/books/{book_id}/download -- 下载 .epub 文件（占位）"""
+    book = await BookService.get_book_detail(
+        db, current_user, book_id
+    )
+    if not book.epub_path:
+        raise AppException(
+            status_code=404,
+            detail="该书籍尚未生成 .epub 文件，请先抓取",
+        )
+    raise AppException(status_code=501, detail="下载功能开发中")
 ```
 
 所有接口返回统一格式：
-```json
-{
-    "success": true,
-    "data": {},
-    "meta": { "page": 1, "total": 100 },
-    "error": null
-}
+```python
+# app/schemas/common.py
+from typing import Generic, TypeVar
+from pydantic import BaseModel
+
+T = TypeVar("T")
+
+
+class PaginationMeta(BaseModel):
+    """分页元信息"""
+    page: int = 1
+    page_size: int = 20
+    total: int = 0
+    total_pages: int = 0
+
+
+class ApiResponse(BaseModel, Generic[T]):
+    """统一 API 响应格式"""
+    success: bool = True
+    data: T | None = None
+    meta: PaginationMeta | None = None
+    error: str | None = None
+
+    @classmethod
+    def ok(
+        cls,
+        data: T = None,
+        meta: PaginationMeta | None = None,
+    ) -> "ApiResponse[T]":
+        """成功响应"""
+        return cls(success=True, data=data, meta=meta, error=None)
+
+    @classmethod
+    def fail(cls, error: str) -> "ApiResponse":
+        """失败响应"""
+        return cls(success=False, data=None, meta=None, error=error)
 ```
 
 ---
@@ -234,9 +630,9 @@ GET    /api/v1/books/:id/download  → 下载 .epub 文件
 
 | 版本 | 内容 | 时间 |
 |------|------|------|
-| **v1.0** | Web 端：注册/登录、书架增删查、在线搜索、抓取 + `.epub` 生成与下载 | — |
-| **v1.1** | 书架搜索、批量删除、抓取进度优化、支持多源站搜索 | — |
-| **v2.0** | 移动端（React Native / Flutter），离线阅读器内嵌 | — |
+| **v1.0** | Web 端：注册/登录、书架增删查、在线搜索、抓取 + `.epub` 生成与下载 | -- |
+| **v1.1** | 书架搜索、批量删除、抓取进度优化、支持多源站搜索 | -- |
+| **v2.0** | 移动端（React Native / Flutter），离线阅读器内嵌 | -- |
 
 ---
 

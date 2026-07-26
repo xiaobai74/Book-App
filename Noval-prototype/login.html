@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>登录 · 小说管理App</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="auth-shell">
+  <div class="auth-card">
+    <h1>登录</h1>
+    <p class="lead">欢迎回来，请登录你的账号</p>
+    <form id="login-form" style="display:flex;flex-direction:column;gap:18px">
+      <div class="field">
+        <label for="login-email">邮箱</label>
+        <input class="input" id="login-email" type="email" placeholder="请输入邮箱地址" required autocomplete="email" />
+      </div>
+      <div class="field">
+        <label for="login-password">密码</label>
+        <input class="input" id="login-password" type="password" placeholder="请输入密码" required autocomplete="current-password" />
+      </div>
+      <p class="field-error" id="login-error" style="display:none"></p>
+      <button class="btn btn-primary" type="submit" style="width:100%;justify-content:center">登录</button>
+    </form>
+    <p style="margin-top:20px;font-size:13px;color:var(--muted);text-align:center">
+      还没有账号？<a href="register.html">立即注册</a>
+    </p>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+document.getElementById('login-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var email = document.getElementById('login-email').value.trim();
+  var password = document.getElementById('login-password').value;
+  var errEl = document.getElementById('login-error');
+
+  var users = getUsers();
+  var found = users.find(function(u) { return u.email === email; });
+  if (!found || found.password !== password) {
+    errEl.textContent = '邮箱或密码错误'; errEl.style.display = ''; return;
+  }
+  errEl.style.display = 'none';
+  saveCurrentUser({ email: email });
+  window.location.href = 'shelf.html';
+});
+</script>
+</body>
+</html>

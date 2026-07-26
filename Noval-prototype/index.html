@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>小说管理App · 原型导航</title>
+  <style>
+    :root { --bg:#f4f6f8; --surface:#fff; --fg:#1e293b; --muted:#64748b; --border:#e2e8f0; --accent:#4a8bb5; --radius:8px; --radius-md:12px; }
+    *,*::before,*::after{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.5}
+    .wrapper{max-width:800px;margin:60px auto;padding:0 24px}
+    h1{font-size:24px;font-weight:700;margin:0 0 6px}
+    .sub{font-size:13px;color:var(--muted);margin-bottom:32px}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:18px 22px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+    .card:hover{border-color:var(--accent)}
+    .card-left{display:flex;align-items:center;gap:14px}
+    .card-icon{width:40px;height:40px;border-radius:var(--radius);display:grid;place-items:center;flex-shrink:0}
+    .card-icon svg{width:18px;height:18px}
+    .card-icon.auth{background:color-mix(in oklch,var(--accent) 12%,transparent);color:var(--accent)}
+    .card-icon.main{background:color-mix(in oklch,var(--accent) 18%,transparent);color:var(--accent)}
+    .card-title{font-size:15px;font-weight:600}
+    .card-path{font-size:12px;color:var(--muted);margin-top:2px}
+    .card-arrow{color:var(--muted);font-size:16px}
+    a{text-decoration:none;color:inherit}
+    .section-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:24px 0 12px}
+    .tech-note{font-size:12px;color:var(--muted);margin-top:40px;padding-top:20px;border-top:1px solid var(--border)}
+    .tech-note code{font-family:ui-monospace,monospace;font-size:11px;background:var(--bg);padding:2px 6px;border-radius:3px}
+  </style>
+</head>
+<body>
+<div class="wrapper">
+  <h1>小说管理App · 原型</h1>
+  <p class="sub">日常小说管理工具 — 搜索、抓取、epub 生成、书架管理 | PRD §4 信息架构</p>
+
+  <p class="section-label">认证页面</p>
+  <a href="login.html"><div class="card">
+    <div class="card-left"><div class="card-icon auth"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="9" width="12" height="7" rx="1.5"/><path d="M6 9V5.5a3 3 0 116 0V9"/></svg></div><div><div class="card-title">登录</div><div class="card-path">login.html — 邮箱 + 密码登录</div></div></div>
+    <span class="card-arrow">→</span>
+  </div></a>
+  <a href="register.html"><div class="card">
+    <div class="card-left"><div class="card-icon auth"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="7" r="3"/><path d="M4 15c0-2.8 2.2-5 5-5s5 2.2 5 5"/></svg></div><div><div class="card-title">注册</div><div class="card-path">register.html — 邮箱注册 + 密码格式校验</div></div></div>
+    <span class="card-arrow">→</span>
+  </div></a>
+
+  <p class="section-label">核心功能</p>
+  <a href="shelf.html"><div class="card">
+    <div class="card-left"><div class="card-icon main"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 14.5A1.5 1.5 0 014.5 13H15"/><path d="M4.5 2H15v14H4.5A1.5 1.5 0 013 14.5v-11A1.5 1.5 0 014.5 2z"/><line x1="6" y1="6" x2="12" y2="6"/><line x1="6" y1="9" x2="10" y2="9"/></svg></div><div><div class="card-title">书架首页</div><div class="card-path">shelf.html — 书籍列表、添加、删除</div></div></div>
+    <span class="card-arrow">→</span>
+  </div></a>
+  <a href="search.html"><div class="card">
+    <div class="card-left"><div class="card-icon main"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5"/><path d="m16 16-3-3"/></svg></div><div><div class="card-title">书架搜索</div><div class="card-path">search.html?q=关键词 — v1.0 书架内搜索</div></div></div>
+    <span class="card-arrow">→</span>
+  </div></a>
+  <a href="detail.html?id=demo-1"><div class="card">
+    <div class="card-left"><div class="card-icon main"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="2" width="12" height="14" rx="1"/><line x1="5" y1="6" x2="13" y2="6"/><line x1="5" y1="9" x2="13" y2="9"/><line x1="5" y1="12" x2="10" y2="12"/></svg></div><div><div class="card-title">书籍详情</div><div class="card-path">detail.html?id=xxx — 信息、抓取、epub 下载</div></div></div>
+    <span class="card-arrow">→</span>
+  </div></a>
+  <a href="settings.html"><div class="card">
+    <div class="card-left"><div class="card-icon main"><svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="9" r="2.2"/><path d="M9 3.5l1.2 2.4 2.6.4-1.9 1.8.4 2.6L9 9.5l-2.3 1.2.4-2.6-1.9-1.8 2.6-.4z"/></svg></div><div><div class="card-title">个人设置</div><div class="card-path">settings.html — 密码修改</div></div></div>
+    <span class="card-arrow">→</span>
+  </div></a>
+
+  <div class="tech-note">
+    <p>所有页面独立可用 · 共享 <code>styles.css</code> + <code>app.js</code> · 通过 <code>localStorage</code> 跨页面共享状态</p>
+    <p>演示模式：首次访问自动创建 demo 账号 + 3 本示例书籍（星辰变、诡秘之主、大王饶命）</p>
+  </div>
+</div>
+</body>
+</html>
