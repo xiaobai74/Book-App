@@ -26,7 +26,7 @@
       "url": "http://www.xbiqugu.la/modules/article/waps.php",
       "method": "post",
       "data": "{searchkey: %s}",
-      "result": "#checkform > table > tbody > tr",
+      "result": "#checkform > table > tr",
       "bookName": "td.even > a",
       "author": "td:nth-of-type(3)",
       "latestChapter": "td.odd > a",
@@ -48,8 +48,9 @@
   {
     "url": "https://www.shuhaige.net/",
     "name": "书海阁小说网",
-    "comment": "部分书源正文段落顺序错乱的书在这里可能正常，搜索爬取过快会丢包",
+    "comment": "搜索结果页有反爬机制，跳转错误页。抓取可用",
     "search": {
+      "disabled": true,
       "url": "https://www.shuhaige.net/search.html",
       "method": "post",
       "data": "{searchkey: %s, searchtype: all}",
@@ -82,11 +83,12 @@
     }
   },
   {
-    "url": "http://www.mcxs.info/",
+    "url": "http://www.mcxs.la/",
     "name": "梦书中文",
-    "comment": "搜索有限流(Connect timed out)",
+    "comment": "原域名 mcxs.info 已重定向到 mcxs.la。搜索已禁用（站内无数据），仅抓取可用",
     "search": {
-      "url": "http://www.mcxs.info/search.html",
+      "disabled": true,
+      "url": "http://www.mcxs.la/search.html",
       "method": "post",
       "data": "{name: %s}",
       "result": ".novelslist2 > ul > li",
@@ -113,8 +115,10 @@
   {
     "url": "https://www.22biqu.com/",
     "name": "笔趣阁22",
-    "comment": "meta信息lastest_chapter_name拼写错误",
+    "comment": "网站连接超时，已全面禁用",
+    "disabled": true,
     "search": {
+      "disabled": true,
       "url": "https://www.22biqu.com/ss/",
       "method": "post",
       "data": "{searchkey: %s, Submit: 搜索}",
@@ -144,24 +148,24 @@
     }
   },
   {
-    "url": "http://www.xbiquzw.net/",
+    "url": "http://www.xbiquwk.com/",
     "name": "笔尖中文",
-    "comment": "",
+    "comment": "原域名 xbiquzw.net 已 301 跳转到 xbiquwk.com，search url 已更新",
     "search": {
-      "url": "http://www.xbiquzw.net/modules/article/search.php",
+      "url": "http://www.xbiquwk.com/modules/article/search.php",
       "method": "post",
       "data": "{searchkey: %s}",
-      "result": "#wrapper > table > tbody > tr",
+      "result": "table.grid > tr",
       "bookName": "td:nth-child(1) > a",
       "author": "td:nth-child(3)",
       "latestChapter": "td:nth-child(2)",
       "lastUpdateTime": "td:nth-child(5)"
     },
     "book": {
-      "url": "http://www.xbiquzw.net/(.*?)/"
+      "url": "http://www.xbiquwk.com/(.*?)/"
     },
     "toc": {
-      "baseUri": "http://www.xbiquzw.net/%s/",
+      "url": "http://www.xbiquwk.com/%s/",
       "item": "#list > dl > dd > a"
     },
     "chapter": {
@@ -247,7 +251,7 @@
   {
     "url": "https://www.biquge365.net/",
     "name": "笔趣阁365",
-    "comment": "搜索间隔15秒，若搜索结果为空则手动打开网页搜一次后再试",
+    "comment": "搜索间隔15秒限制，触发后返回空页。手动打开网页搜一次后可解",
     "search": {
       "url": "https://www.biquge365.net/s.php",
       "method": "post",
@@ -278,7 +282,8 @@
   {
     "url": "https://www.ranwen8.cc/",
     "name": "燃文小说网",
-    "comment": "正文段落被base64编码，暂不启用搜索",
+    "comment": "网站连接超时，已全面禁用。正文段落被base64编码",
+    "disabled": true,
     "search": {
       "disabled": true,
       "url": "https://www.ranwen8.cc/search.html",
@@ -317,7 +322,7 @@
   {
     "url": "https://www.biquge365.xyz/",
     "name": "笔趣阁365备用",
-    "comment": "备用站",
+    "comment": "备用站，域名已失效 (DNS 解析失败)",
     "disabled": true,
     "search": {
       "url": "https://www.biquge365.xyz/s.php",

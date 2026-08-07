@@ -114,6 +114,10 @@ class RuleEngine:
             domain = self._extract_domain(rule.get("url", ""))
             if domain:
                 self._rules_by_domain[domain] = rule
+
+            # 建立 ID 索引
+            global_id = len(self._rules) + len(self._custom_rules) - 1
+            self._rules_by_id[global_id] = rule
             count += 1
 
         if count > 0:
@@ -219,12 +223,26 @@ class RuleEngine:
         return None
 
     def get_rule_by_id(self, source_id: int) -> dict[str, Any] | None:
-        """按源站 ID（在 rules 数组中的索引）获取规则。"""
-        return self._rules_by_id.get(source_id)
+        """按源站 ID 获取规则。
+
+        支持内置规则（ID = 在 main.json 中的索引）和自定义规则
+        （ID = len(_rules) + 在 _custom_rules 中的索引）。
+        """
+        rule = self._rules_by_id.get(source_id)
+        if rule is not None:
+            return rule
+        # 自定义规则：ID 从 len(_rules) 开始偏移
+        custom_index = source_id - len(self._rules)
+        if 0 <= custom_index < len(self._custom_rules):
+            return self._custom_rules[custom_index]
+        return None
 
     def get_source_by_name(self, name: str) -> dict[str, Any] | None:
-        """按源站名称查找规则。"""
+        """按源站名称查找规则（内置 + 自定义）。"""
         for rule in self._rules:
+            if rule.get("name") == name:
+                return rule
+        for rule in self._custom_rules:
             if rule.get("name") == name:
                 return rule
         return None
@@ -232,24 +250,38 @@ class RuleEngine:
     # ── 查询 ──────────────────────────────────────────
 
     def list_sources(self) -> list[dict[str, Any]]:
-        """返回所有可用源站的摘要信息（不含详细规则）。"""
-        return [
-            {
+        """返回所有可用源站的摘要信息（内置 + 自定义，不含详细规则）。"""
+        sources: list[dict[str, Any]] = []
+        for i, r in enumerate(self._rules):
+            sources.append({
                 "id": i,
                 "name": r.get("name", "未知"),
                 "url": r.get("url", ""),
-                "has_search": "search" in r,
+                "has_search": "search" in r and not r.get("search", {}).get("disabled", False),
                 "comment": r.get("comment", ""),
-            }
-            for i, r in enumerate(self._rules)
-        ]
+                "is_custom": False,
+            })
+        for i, r in enumerate(self._custom_rules):
+            sources.append({
+                "id": i + len(self._rules),
+                "name": r.get("name", "未知"),
+                "url": r.get("url", ""),
+                "has_search": "search" in r and not r.get("search", {}).get("disabled", False),
+                "comment": r.get("comment", ""),
+                "is_custom": True,
+            })
+        return sources
 
     def list_searchable_sources(self) -> list[tuple[int, dict[str, Any]]]:
-        """返回所有支持搜索的源站列表。"""
-        return [
-            (i, r) for i, r in enumerate(self._rules)
-            if "search" in r and not (r.get("search") or {}).get("disabled", False)
-        ]
+        """返回所有支持搜索的源站列表（内置 + 自定义）。"""
+        result: list[tuple[int, dict[str, Any]]] = []
+        for i, r in enumerate(self._rules):
+            if "search" in r and not (r.get("search") or {}).get("disabled", False):
+                result.append((i, r))
+        for i, r in enumerate(self._custom_rules):
+            if "search" in r and not (r.get("search") or {}).get("disabled", False):
+                result.append((i + len(self._rules), r))
+        return result
 
     # ── 自定义源站管理 ──────────────────────────────
 
@@ -265,14 +297,18 @@ class RuleEngine:
         rule["custom"] = True  # 标记为自定义规则
         self._custom_rules.append(rule)
 
+        # 更新索引
+        new_id = len(self._rules) + len(self._custom_rules) - 1
+        self._rules_by_id[new_id] = rule
+
         # 更新域名索引
         domain = self._extract_domain(rule.get("url", ""))
         if domain:
             self._rules_by_domain[domain] = rule
 
         self._save_custom_rules()
-        logger.info(f"已添加自定义源站: {rule.get('name', '未知')} (domain={domain})")
-        return len(self._rules) + len(self._custom_rules) - 1
+        logger.info(f"已添加自定义源站: {rule.get('name', '未知')} (domain={domain}, id={new_id})")
+        return new_id
 
     def update_custom_source(self, index: int, rule: dict[str, Any]) -> bool:
         """更新一条自定义源站规则。
@@ -294,6 +330,10 @@ class RuleEngine:
 
         rule["custom"] = True
         self._custom_rules[index] = rule
+
+        # 更新 _rules_by_id 索引
+        global_id = len(self._rules) + index
+        self._rules_by_id[global_id] = rule
 
         # 添加新域名索引
         domain = self._extract_domain(rule.get("url", ""))
@@ -317,6 +357,17 @@ class RuleEngine:
             return False
 
         rule = self._custom_rules.pop(index)
+
+        # 清理 _rules_by_id 索引
+        old_global_id = len(self._rules) + index
+        if old_global_id in self._rules_by_id:
+            del self._rules_by_id[old_global_id]
+        # 移除后，后续自定义规则的 ID 都减 1，需要重建它们的索引
+        for i in range(index, len(self._custom_rules)):
+            new_global_id = len(self._rules) + i
+            if new_global_id in self._rules_by_id:
+                del self._rules_by_id[new_global_id]
+            self._rules_by_id[new_global_id] = self._custom_rules[i]
 
         # 清理域名索引
         domain = self._extract_domain(rule.get("url", ""))

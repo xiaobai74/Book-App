@@ -17,3 +17,10 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Generated ebook files
+backend/epub_output/
+backend/txt_output/
+
+# Local Claude configuration
+.claude/

@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 120  # Access Token 2 小时
     refresh_token_expire_days: int = 7      # Refresh Token 7 天
 
+    # Dify AI
+    dify_api_url: str = "http://localhost:5001/v1"
+    dify_api_key: str = ""
+    dify_summary_api_key: str = ""
+
     # CORS
     cors_origins: list[str] = [
         "http://localhost:5173",

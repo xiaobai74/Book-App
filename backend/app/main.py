@@ -17,11 +17,12 @@ from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 # 确保所有 ORM 模型在应用启动前被导入
-from app.models import User, Book, RefreshToken, Chapter, CrawlSource  # noqa: F401
+from app.models import User, Book, RefreshToken, Chapter, CrawlSource, ReadingProgress  # noqa: F401
 
 from app.api.v1.auth import router as auth_router
 from app.api.v1.books import router as books_router
 from app.api.v1.books import crawl_source_router
+from app.api.v1.ai import router as ai_router
 from app.config import settings
 from app.middleware.error_handler import (
     AppException,
@@ -64,6 +65,7 @@ app.add_exception_handler(Exception, general_exception_handler)
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(books_router, prefix="/api/v1")
 app.include_router(crawl_source_router, prefix="/api/v1")
+app.include_router(ai_router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["系统"], summary="健康检查")

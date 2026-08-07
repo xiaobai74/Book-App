@@ -137,7 +137,12 @@ class CrawlerService:
     # ═══════════════════════════════════════════════════════════
 
     async def check_connectivity(self, url: str) -> ConnectivityResult:
-        """测试源站是否可达。"""
+        """测试源站是否可达。
+
+        策略：先尝试 GET 请求（stream 模式，只读取第一个 chunk），
+        因为很多小说网站不支持 HEAD 请求（返回 405/404/403）。
+        GET 回退更贴近真实抓取场景，避免误判。
+        """
         if url in self._connectivity_cache:
             return self._connectivity_cache[url]
 
@@ -149,9 +154,23 @@ class CrawlerService:
             suggested_fix=None,
         )
 
+        # 先尝试 GET（stream 模式，不消耗大量带宽）
         try:
             async with self._make_client() as client:
-                resp = await client.head(url, follow_redirects=True)
+                async with client.stream("GET", url, follow_redirects=True) as resp:
+                    result.reachable = 200 <= resp.status_code < 500
+                    result.status_code = resp.status_code
+                    cl = resp.headers.get("content-length", "0")
+                    result.content_length = int(cl) if cl.isdigit() else 0
+                    if resp.status_code >= 400:
+                        result.error_message = f"源站返回 HTTP {resp.status_code}"
+                        result.suggested_fix = "该页面可能不存在或已被移除，请检查 URL 是否正确"
+                    # 读取第一个 chunk 以确认连接正常
+                    try:
+                        async for _ in resp.aiter_bytes(1):
+                            break
+                    except Exception:
+                        pass
         except httpx.ConnectTimeout:
             result.error_message = "连接源站超时，服务器可能不可达或被防火墙拦截"
             result.suggested_fix = "请检查 source_url 是否正确，或尝试更换其他源站"
@@ -164,13 +183,6 @@ class CrawlerService:
         except Exception as e:
             result.error_message = f"网络连接异常: {e}"
             result.suggested_fix = "请检查网络连接，或稍后重试"
-        else:
-            result.reachable = 200 <= resp.status_code < 500
-            result.status_code = resp.status_code
-            result.content_length = int(resp.headers.get("content-length", "0"))
-            if resp.status_code >= 400:
-                result.error_message = f"源站返回 HTTP {resp.status_code}"
-                result.suggested_fix = "该页面可能不存在或已被移除，请检查 URL 是否正确"
 
         self._connectivity_cache[url] = result
         return result
@@ -195,52 +207,13 @@ class CrawlerService:
                 resp.raise_for_status()
                 if resp.cookies:
                     self._cookie_jar = resp.cookies
-                if resp.charset_encoding:
-                    resp.encoding = resp.charset_encoding
-                else:
-                    resp.encoding = self._detect_encoding(resp.text[:4096]) or "utf-8"
-                return resp.text
-            except httpx.HTTPStatusError as e:
-                last_err = e
-                status = e.response.status_code
-                if status in (403, 404, 410):
-                    raise RuntimeError(f"源站拒绝访问 (HTTP {status}): {url}")
-                if attempt < retries - 1:
-                    await asyncio.sleep(2 ** attempt)
-            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
-                last_err = e
-                if attempt < retries - 1:
-                    wait = 2 ** attempt
-                    logger.warning(f"请求失败 (尝试 {attempt + 1}/{retries}): {e}，{wait}s 后重试")
-                    await asyncio.sleep(wait)
-            except Exception as e:
-                last_err = e
-                if attempt < retries - 1:
-                    await asyncio.sleep(2 ** attempt)
-
-        raise RuntimeError(f"无法访问 {url}，已重试 {retries} 次: {last_err}")
-
-    async def _post(
-        self,
-        client: httpx.AsyncClient,
-        url: str,
-        data: str | dict | None = None,
-        retries: int | None = None,
-    ) -> str:
-        """带重试的 POST 请求，自动检测编码。"""
-        retries = retries if retries is not None else self.max_retries
-        last_err = None
-
-        for attempt in range(retries):
-            try:
-                resp = await client.post(url, data=data)
-                resp.raise_for_status()
-                if resp.cookies:
-                    self._cookie_jar = resp.cookies
-                if resp.charset_encoding:
-                    resp.encoding = resp.charset_encoding
-                else:
-                    resp.encoding = self._detect_encoding(resp.text[:4096]) or "utf-8"
+                # 先通过原始字节检测编码，再设置 encoding
+                # httpx 的 charset_encoding 可能为空字符串或 None
+                # 在访问 .text 之前设置 encoding 避免 httpx 锁定错误编码
+                if not resp.charset_encoding:
+                    detected = self._detect_encoding(resp.content[:4096])
+                    if detected:
+                        resp.encoding = detected
                 return resp.text
             except httpx.HTTPStatusError as e:
                 last_err = e
@@ -263,14 +236,35 @@ class CrawlerService:
         raise RuntimeError(f"无法访问 {url}，已重试 {retries} 次: {last_err}")
 
     @staticmethod
-    def _detect_encoding(text_fragment: str) -> str | None:
-        """从 HTML meta 标签中检测编码。"""
-        m = re.search(
-            r'<meta[^>]+charset\s*=\s*["\']?\s*([\w-]+)',
-            text_fragment,
-            re.IGNORECASE,
-        )
-        return m.group(1) if m else None
+    def _detect_encoding(raw_bytes: bytes) -> str | None:
+        """从 HTML meta 标签中检测编码。
+
+        尝试多种常见的中文编码解码头部，从中提取 <meta charset> 声明。
+        因为页面可能是 utf-8、gbk、gb2312、big5 等编码，直接用一种编码解码
+        可能导致乱码而无法匹配 charset 声明。
+        """
+        # 优先尝试的编码列表（中文网站常见）
+        candidates = ["utf-8", "gbk", "gb2312", "gb18030", "big5", "latin-1"]
+        head = raw_bytes[:4096]
+
+        for encoding in candidates:
+            try:
+                fragment = head.decode(encoding)
+                m = re.search(
+                    r'<meta[^>]+charset\s*=\s*["\']?\s*([\w-]+)',
+                    fragment,
+                    re.IGNORECASE,
+                )
+                if m:
+                    detected = m.group(1)
+                    # 标准化解码名称 (gb2312 → gbk)
+                    if detected.lower() in ("gb2312", "gbk", "gb18030"):
+                        return "gbk"
+                    return detected
+            except (UnicodeDecodeError, LookupError):
+                continue
+
+        return None
 
     # ═══════════════════════════════════════════════════════════
     # 选择器解析
@@ -278,10 +272,12 @@ class CrawlerService:
 
     @staticmethod
     def _select_one(soup: BeautifulSoup, selector: str):
-        """使用 CSS Selector 或 XPath 选取单个元素。
+        """使用 CSS Selector 选取单个元素。
 
-        支持 @js: 后缀进行简单 JavaScript 风格的后处理（暂不支持完整 JS）。
-        支持 @attr 提取属性值，例如 "meta[property=\"og:image\"]@content"。
+        支持 @attr 后缀提取属性值，例如 "meta[property=\"og:image\"]@content"。
+
+        注意：XPath 选择器已弃用，请使用 CSS Selector。
+        BeautifulSoup 的 .select() 仅支持 CSS Selector 语法。
         """
         if not selector:
             return None
@@ -298,13 +294,9 @@ class CrawlerService:
                 attr_name = suffix.strip()
                 selector = selector[:last_at_idx]
 
-        # XPath 以 // 或 / 开头
+        # XPath 以 // 或 / 开头 — 不支持，建议使用 CSS Selector
         if selector.startswith("//") or selector.startswith("/"):
-            try:
-                import lxml.etree  # noqa: F401
-                return soup.select_one(selector)
-            except ImportError:
-                return soup.select_one(selector)
+            logger.warning(f"XPath 选择器不支持，将作为 CSS Selector 处理: {selector[:60]}")
 
         # CSS Selector
         result = soup.select_one(selector)
@@ -316,20 +308,25 @@ class CrawlerService:
 
     @staticmethod
     def _select_all(soup: BeautifulSoup, selector: str) -> list:
-        """使用 CSS Selector 或 XPath 选取所有匹配元素。"""
+        """使用 CSS Selector 选取所有匹配元素。
+
+        支持 @attr 后缀提取属性值。
+        """
         if not selector:
             return []
 
         attr_name = None
-        if "@" in selector:
-            parts = selector.split("@", 1)
-            selector = parts[0]
-            suffix = parts[1]
-            if not suffix.startswith("js:"):
+        # 使用与 _select_one 一致的逻辑：查找最后一个 @ 且不是 CSS 属性选择器
+        last_at_idx = selector.rfind("@")
+        if last_at_idx > 0:
+            suffix = selector[last_at_idx + 1:]
+            if not suffix.startswith("js:") and "=" not in suffix:
                 attr_name = suffix.strip()
+                selector = selector[:last_at_idx]
 
+        # XPath 以 // 或 / 开头 — 不支持，建议使用 CSS Selector
         if selector.startswith("//") or selector.startswith("/"):
-            return soup.select(selector)
+            logger.warning(f"XPath 选择器不支持，将作为 CSS Selector 处理: {selector[:60]}")
 
         results = soup.select(selector)
         if attr_name and results:
@@ -425,15 +422,18 @@ class CrawlerService:
                     pairs.append((title, href))
 
         if not pairs:
+            # 按常见的章节 URL 模式匹配，排除导航链接
+            # 模式覆盖: /123.html, 123.html, /chapter/xxx, /read/xxx, /book/123.html
             chapter_pattern = re.compile(
-                r"(/\d+\.html?|/\d+_\d+/|/chapter/|/read/|/book/\d+\.html)",
+                r"(\d+\.html?$|/\d+_\d+/|/chapter/|/read/|/book/\d+\.html)",
                 re.I,
             )
+            nav_titles = {"下一章", "上一章", "下一页", "上一页", "返回目录", "回目录", "首页", "下一頁", "上一頁"}
             for a in soup.find_all("a", href=True):
                 href = a.get("href", "")
-                if chapter_pattern.search(href):
-                    title = a.get_text(strip=True)
-                    if title and len(title) >= 2:
+                title = a.get_text(strip=True)
+                if title and len(title) >= 2 and chapter_pattern.search(href):
+                    if title not in nav_titles:
                         pairs.append((title, href))
 
         seen: set[str] = set()
@@ -471,17 +471,10 @@ class CrawlerService:
         visited_urls: set[str] = {current_url}
         page_count = 0
         max_toc_pages = 50  # 安全上限
+        html = first_html  # 当前页 HTML（首次由调用方传入）
 
         while page_count < max_toc_pages:
-            soup = BeautifulSoup(
-                first_html if page_count == 0 else "",
-                "html.parser",
-            )
-            if page_count > 0:
-                soup = BeautifulSoup(
-                    await self._get(client, current_url),
-                    "html.parser",
-                )
+            soup = BeautifulSoup(html, "html.parser")
 
             next_el = self._select_one(soup, next_selector)
             if not next_el:
@@ -576,12 +569,16 @@ class CrawlerService:
                 # ★ 关键: filterTag 的语义是"去掉这些标签壳，保留内部文字"
                 # SoNovel 用 filterTag 来剔除 HTML 标签（只删标签，不删内容）
                 # 所以要用 unwrap() 而不是 decompose()
+                # 注意: filterTag 支持两种格式:
+                #   1) 纯标签名，如 "div, p, script" → 用 .select() 匹配
+                #   2) CSS 选择器，如 ".bottem2, hr"  → 也用 .select() 匹配
                 if filter_tag:
-                    for tag_name in filter_tag.split(","):
-                        tag_name = tag_name.strip()
-                        if tag_name:
-                            for el in content_el.select(tag_name):
-                                el.unwrap()  # 去掉标签，保留文字
+                    for token in filter_tag.split(","):
+                        token = token.strip()
+                        if not token:
+                            continue
+                        for el in content_el.select(token):
+                            el.unwrap()  # 去掉标签，保留文字
 
                 if chapter_rule.get("base64Decode"):
                     raw = content_el.get_text("", strip=False)
@@ -726,12 +723,7 @@ class CrawlerService:
         all_contents = [content]
 
         while page_count < max_pages:
-            soup = BeautifulSoup(html if page_count == 0 else "", "html.parser")
-            if page_count > 0:
-                soup = BeautifulSoup(
-                    await self._get(client, current_url),
-                    "html.parser",
-                )
+            soup = BeautifulSoup(html, "html.parser")
 
             next_el = self._select_one(soup, next_selector)
             if not next_el:
@@ -784,7 +776,16 @@ class CrawlerService:
             # 获取第一章页（可能需要拼接 TOC URL）
             toc_url = self._resolve_toc_url(source_url, rule)
 
-            html = await self._get(client, toc_url)
+            try:
+                html = await self._get(client, toc_url)
+            except RuntimeError:
+                # TOC URL 解析后的 URL 返回了 404，回退到原始 source_url
+                if toc_url != source_url:
+                    logger.info(f"TOC URL {toc_url} 不可达，回退到原始 source_url")
+                    toc_url = source_url
+                    html = await self._get(client, toc_url)
+                else:
+                    raise
             chapters = await self._fetch_toc_pages(client, toc_url, rule, html)
 
             if not chapters:
@@ -800,7 +801,7 @@ class CrawlerService:
         例如 book.url 用正则从详情页 URL 提取 ID，toc.url 用 %s 拼接。
         """
         toc_rule = rule.get("toc", {})
-        toc_url_template = toc_rule.get("url", "")
+        toc_url_template = toc_rule.get("url", "") or toc_rule.get("baseUri", "")
 
         if not toc_url_template:
             return source_url
@@ -810,18 +811,21 @@ class CrawlerService:
             book_rule = rule.get("book", {})
             book_url_pattern = book_rule.get("url", "")
 
+            book_id = None
             if book_url_pattern:
                 m = re.search(book_url_pattern, source_url)
                 if m:
                     book_id = m.group(1)
-                    return toc_url_template % book_id
 
-            # 尝试从 URL 路径的最后一段提取
-            path_parts = urlparse(source_url).path.strip("/").split("/")
-            if path_parts:
-                book_id = path_parts[-1]
-                # 去掉 .html 后缀
-                book_id = re.sub(r"\.\w+$", "", book_id)
+            # 尝试从 URL 路径的最后一段提取（仅当正则未匹配到时）
+            if not book_id:
+                path_parts = urlparse(source_url).path.strip("/").split("/")
+                if path_parts:
+                    book_id = path_parts[-1]
+                    # 去掉 .html 后缀
+                    book_id = re.sub(r"\.\w+$", "", book_id)
+
+            if book_id:
                 return toc_url_template % book_id
 
         return source_url
@@ -851,7 +855,9 @@ class CrawlerService:
             # 没给 rule 就自动匹配
             rule = self._engine.match_rule(chapter_url)
         if rule is None:
-            raise RuntimeError(f"未找到匹配的抓取规则: {chapter_url}")
+            # 回退到通用规则（与 get_chapter_list 保持一致）
+            logger.info(f"crawl_chapter: 未匹配到预配置规则，使用通用规则")
+            rule = self._engine._build_generic_rule(chapter_url)
 
         async with self._make_client() as client:
             return await self._crawl_chapter_with_pagination(client, chapter_url, rule)

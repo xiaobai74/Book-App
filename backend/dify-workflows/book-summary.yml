@@ -1,0 +1,202 @@
+# ═══════════════════════════════════════════════════════════════
+# Dify Workflow 参考配置：智能阅读摘要生成
+#
+# 导入方式：在 Dify 中"创建应用 → 导入 DSL"，粘贴本文件内容
+# 类型：Workflow
+#
+# 功能：根据书籍信息和章节样本，由 LLM 生成情节摘要、角色列表、风格标签。
+# 通过 Webhook 触发，生成完成后回调后端 API 存储结果。
+# ═══════════════════════════════════════════════════════════════
+
+app:
+  description: "智能阅读摘要生成 — 基于章节样本自动生成书籍的情节摘要、角色列表和风格标签"
+  icon: "📝"
+  icon_background: "#FEF3C7"
+  mode: workflow
+  name: "小说摘要生成器"
+
+kind: app
+
+version: 0.1.0
+
+workflow:
+  conversation_variables: []
+
+  features:
+    file_upload:
+      enabled: false
+    opening_statement: ""
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    text_to_speech:
+      enabled: false
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+
+  graph:
+    edges:
+      - id: "start-to-llm"
+        source: "start"
+        sourceHandle: "source"
+        target: "llm"
+        targetHandle: "target"
+      - id: "llm-to-code-format"
+        source: "llm"
+        sourceHandle: "source"
+        target: "code-format"
+        targetHandle: "target"
+      - id: "code-format-to-end"
+        source: "code-format"
+        sourceHandle: "source"
+        target: "end"
+        targetHandle: "target"
+
+    nodes:
+      # ══ 节点 1: 开始 / Webhook 触发 ═══════════════════════════════
+      - id: "start"
+        type: "start"
+        position:
+          x: 80
+          "y": 140
+        data:
+          title: "输入"
+          type: "start"
+          variables:
+            - label: "书名"
+              max_length: 500
+              options: []
+              required: true
+              type: "text-input"
+              variable: "book_title"
+            - label: "作者"
+              max_length: 255
+              options: []
+              required: true
+              type: "text-input"
+              variable: "book_author"
+            - label: "章节样本（前3章+后2章，JSON格式）"
+              max_length: 20000
+              options: []
+              required: true
+              type: "paragraph"
+              variable: "chapter_samples"
+
+      # ══ 节点 2: LLM — 生成摘要 ═══════════════════════════════════
+      - id: "llm"
+        type: "llm"
+        position:
+          x: 380
+          "y": 140
+        data:
+          title: "生成摘要"
+          type: "llm"
+          model:
+            mode: "chat"
+            name: "gpt-4o-mini"
+            provider: "openai"
+            completion_params:
+              temperature: 0.3
+              max_tokens: 3000
+          prompt_template:
+            - role: "system"
+              text: |
+                你是一个专业的小说编辑和文学评论家。请根据提供的小说信息生成一份阅读摘要。
+
+                ---
+                **书名**：{{#start.book_title#}}
+                **作者**：{{#start.book_author#}}
+                **章节样本**（前 3 章和后 2 章的标题及正文开头）：
+
+                {{#start.chapter_samples#}}
+                ---
+
+                请严格按照以下格式生成内容（每个部分以【】开头，不要添加额外的 markdown 格式）：
+
+                【情节摘要】
+                约 150 字的情节概述。描述故事的核心冲突和主要情节走向，但不要剧透结局。
+                如果从章节样本中无法判断完整情节，请基于已有内容合理推断，并在文末标注"（基于样本推断）"。
+
+                【主要角色】
+                列出 3-5 个主要角色。每个角色一行，格式为：**角色名**（如有）：一句话描述其身份和性格特点。
+                如果样本中角色信息有限，至少列出书名和作者信息。
+
+                【风格标签】
+                3-5 个标签，用中文顿号分隔。示例标签：修仙、爽文、种田、穿越、悬疑、都市、玄幻、武侠、言情、科幻等。
+
+                【阅读提示】
+                一句话，帮助读者决定是否阅读。如"适合喜欢快节奏爽文的读者""文艺风格，慢热但后劲足"等。
+
+            - role: "user"
+              text: "请为《{{#start.book_title#}}》生成阅读摘要"
+          memory:
+            window:
+              enabled: false
+          variables: []
+          context:
+            enabled: false
+
+      # ══ 节点 3: Code — 格式化输出 ═══════════════════════════════
+      - id: "code-format"
+        type: "code"
+        position:
+          x: 680
+          "y": 140
+        data:
+          title: "格式化"
+          type: "code"
+          code_language: "python3"
+          code: |
+            def main(llm_output: str) -> dict:
+                """
+                清理 LLM 输出，确保格式一致。
+                输出直接作为 API 回调的 body。
+                """
+                # 去掉首尾空白
+                text = llm_output.strip()
+
+                # 确保以【开头（有时 LLM 会加前缀文字）
+                idx = text.find("【")
+                if idx > 0:
+                    text = text[idx:]
+
+                return {
+                    "summary_text": text,
+                    "generated": True,
+                }
+
+          variables:
+            - variable: "llm_output"
+              value_selector:
+                - "llm"
+                - "text"
+          outputs:
+            - name: "summary_text"
+              type: "string"
+              children: null
+            - name: "generated"
+              type: "boolean"
+              children: null
+
+      # ══ 节点 4: 结束 ═══════════════════════════════════════════
+      - id: "end"
+        type: "end"
+        position:
+          x: 980
+          "y": 140
+        data:
+          title: "输出"
+          type: "end"
+          outputs:
+            - variable: "summary_text"
+              value_selector:
+                - "code-format"
+                - "summary_text"
+            - variable: "generated"
+              value_selector:
+                - "code-format"
+                - "generated"

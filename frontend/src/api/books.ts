@@ -2,11 +2,13 @@
    小说管理App · 书架 & 搜索 API
    ═══════════════════════════════════════════════════════ */
 import http from './http'
-import type { ApiResponse, Book, BookDetail, AddBookRequest, CrawlStatus, SearchParams, SearchResultItem, SourceItem, CrawlSource, CrawlSourceFormData, CrawlSourceTestRequest, CrawlSourceTestResult } from '@/types'
+import type { ApiResponse, Book, BookDetail, ChapterSummary, ChapterDetail, ReadingProgress, AddBookRequest, CrawlStatus, SearchParams, SearchResultItem, SourceItem, CrawlSource, CrawlSourceFormData, CrawlSourceTestRequest, CrawlSourceTestResult, AiSearchResult } from '@/types'
 
 /** 获取书架列表 */
-export function getBooks(page = 1, page_size = 20) {
-  return http.get<ApiResponse<Book[]>>('/books', { params: { page, page_size } })
+export function getBooks(page = 1, page_size = 20, marked?: boolean | null) {
+  const params: Record<string, any> = { page, page_size }
+  if (marked !== null && marked !== undefined) params.marked = marked
+  return http.get<ApiResponse<Book[]>>('/books', { params })
 }
 
 /** 添加书籍 */
@@ -22,6 +24,31 @@ export function getBookDetail(bookId: string) {
 /** 删除书籍 */
 export function deleteBook(bookId: string) {
   return http.delete<ApiResponse<null>>(`/books/${bookId}`)
+}
+
+/** 标记/取消标记书籍 */
+export function toggleMarkBook(bookId: string) {
+  return http.put<ApiResponse<Book>>(`/books/${bookId}/mark`)
+}
+
+/** 获取章节列表 */
+export function getChapters(bookId: string) {
+  return http.get<ApiResponse<ChapterSummary[]>>(`/books/${bookId}/chapters`)
+}
+
+/** 获取章节内容 */
+export function getChapterContent(bookId: string, chapterIndex: number) {
+  return http.get<ApiResponse<ChapterDetail>>(`/books/${bookId}/chapters/${chapterIndex}`)
+}
+
+/** 获取阅读进度 */
+export function getReadingProgress(bookId: string) {
+  return http.get<ApiResponse<ReadingProgress>>(`/books/${bookId}/progress`)
+}
+
+/** 更新阅读进度 */
+export function updateReadingProgress(bookId: string, chapter_index: number) {
+  return http.put<ApiResponse<ReadingProgress>>(`/books/${bookId}/progress`, { chapter_index })
 }
 
 /** 搜索书籍（书架内） */
@@ -97,4 +124,23 @@ export function deleteCrawlSource(id: number) {
 /** 测试自定义源站规则 */
 export function testCrawlSource(data: CrawlSourceTestRequest) {
   return http.post<ApiResponse<CrawlSourceTestResult>>('/crawl-sources/test', data)
+}
+
+// ═══════════════════════════════════════════════════════
+// AI 功能 API（v1.3 新增）
+// ═══════════════════════════════════════════════════════
+
+/** AI 自然语言搜索（书架内） */
+export function aiSearchBooks(query: string) {
+  return http.post<ApiResponse<AiSearchResult[]>>('/ai/search', { query })
+}
+
+/** 触发 AI 摘要生成 */
+export function generateAiSummary(bookId: string) {
+  return http.post<ApiResponse<{ status: string; ai_summary?: string | null; ai_summary_at?: string | null; error?: string | null }>>(`/ai/summary/${bookId}`)
+}
+
+/** 获取 AI 摘要 */
+export function getAiSummary(bookId: string) {
+  return http.get<ApiResponse<{ status: string; ai_summary?: string | null; ai_summary_at?: string | null; error?: string | null }>>(`/ai/summary/${bookId}`)
 }

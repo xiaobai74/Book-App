@@ -1,0 +1,230 @@
+# ═══════════════════════════════════════════════════════════════
+# Dify Chatflow 参考配置：自然语言书架搜索
+#
+# 导入方式：在 Dify 中"创建应用 → 导入 DSL"，粘贴本文件内容
+# 类型：Chatflow
+#
+# 功能：接收用户的自然语言查询 + 书架书籍数据（JSON），
+#       由 LLM 进行语义匹配，返回 Top 5 最匹配的书籍。
+#
+# 版本: v0.2.0 (2026-08-07)
+#   - 新增 reading_progress、marked_at、has_epub、total_book_count 字段
+#   - 优化匹配维度权重和 match_reason 生成规则
+# ═══════════════════════════════════════════════════════════════
+
+app:
+  description: "自然语言书架搜索 — 用日常语言描述想找的书，AI 帮你从书架中精准匹配"
+  icon: "🔍"
+  icon_background: "#E0F2FE"
+  mode: chat
+  name: "书架语义搜索"
+
+kind: app
+
+version: 0.1.0
+
+workflow:
+  conversation_variables: []
+
+  features:
+    file_upload:
+      enabled: false
+    opening_statement: "你好！我是你的书架搜索助手。你可以用自然语言描述想找的书，比如'最近看的那本修仙小说'或'主角姓林的'，我会帮你在书架中找到最匹配的书籍。"
+    suggested_questions:
+      - "最近看的那本修仙小说"
+      - "主角姓林的那本书"
+      - "帮我找一本搞笑的"
+      - "有没有关于盗墓的小说"
+      - "找一本已经标记的书"
+    suggested_questions_after_answer:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    text_to_speech:
+      enabled: false
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+
+  graph:
+    edges:
+      - id: "start-to-llm"
+        source: "start"
+        sourceHandle: "source"
+        target: "llm"
+        targetHandle: "target"
+      - id: "llm-to-code"
+        source: "llm"
+        sourceHandle: "source"
+        target: "code"
+        targetHandle: "target"
+      - id: "code-to-answer"
+        source: "code"
+        sourceHandle: "source"
+        target: "answer"
+        targetHandle: "target"
+
+    nodes:
+      # ══ 节点 1: 开始 — 接收用户输入 ═══════════════════════════════
+      - id: "start"
+        type: "start"
+        position:
+          x: 80
+          "y": 140
+        data:
+          title: "开始"
+          type: "start"
+          variables:
+            - label: "自然语言查询"
+              max_length: 500
+              options: []
+              required: true
+              type: "text-input"
+              variable: "query"
+            - label: "书架书籍数据（JSON，含阅读进度、标记等信息）"
+              max_length: 50000
+              options: []
+              required: true
+              type: "paragraph"
+              variable: "books_json"
+            - label: "书架书籍总数"
+              max_length: 10
+              options: []
+              required: false
+              type: "text-input"
+              variable: "total_book_count"
+
+      # ══ 节点 2: LLM — 执行语义匹配 ═══════════════════════════════
+      - id: "llm"
+        type: "llm"
+        position:
+          x: 380
+          "y": 140
+        data:
+          title: "语义匹配"
+          type: "llm"
+          model:
+            mode: "chat"
+            name: "gpt-4o-mini"
+            provider: "openai"
+            completion_params:
+              temperature: 0.1
+              max_tokens: 2000
+          prompt_template:
+            - role: "system"
+              text: |
+                你是一个书架搜索引擎。用户会用自然语言描述想找的书。
+                用户书架中共有 {{#start.total_book_count#}} 本书。
+
+                以下是该用户书架中的全部书籍数据（含阅读进度、标记状态、生成文件状态）：
+
+                ```
+                {{#start.books_json#}}
+                ```
+
+                请根据用户的查询，从书架中找出最匹配的 1-5 本书。
+
+                **数据结构说明**：
+                - chapter_count: 已抓取的章节数量（>0 表示已有内容）
+                - is_marked: 是否被用户标记/星标（true=特别重视）
+                - reading_progress.last_chapter: 用户最后读到的章节号（>0 表示正在/曾经阅读）
+                - has_epub: 是否已生成 EPUB 文件
+                - status: 书籍抓取状态（"done"=已完成抓取）
+
+                **匹配维度**（按优先级排序）：
+                1. 书名与查询的语义相关性（关键词匹配、含义相近、题材类型匹配）
+                2. 作者是否与查询匹配
+                3. 用户行为信号：
+                   - is_marked=true → 用户特意标注的重视书籍 → +20 权重
+                   - reading_progress > 0 → 正在/曾经阅读 → +15 权重
+                   - status="done" 且 chapter_count 多 → 内容丰富的书籍 → +5 权重
+                4. 时间信号（最近添加的书籍更可能是"最近看的"）
+                5. 有 EPUB 文件的书籍用户可能性更高
+
+                **输出格式**：严格的 JSON 数组（不要包在 markdown 代码块中），每个元素包含：
+                - book_id: 书籍 ID（原样返回 books_json 中的值）
+                - title: 书名
+                - author: 作者
+                - match_reason: 面向用户的一句话解释（中文，20 字以内），如「书名匹配关键词"修仙"」「作者为"辰东"+ 已标记」「最近在读的修仙小说」
+                - score: 匹配度 0-100 的整数
+
+                即使没有完美匹配，也请返回最接近的 1-5 本书，按 score 降序排列。
+                如果书架为空或无任何相关书籍，返回空数组 []。
+
+            - role: "user"
+              text: "{{#start.query#}}"
+          memory:
+            window:
+              enabled: false
+          variables: []
+          context:
+            enabled: false
+
+      # ══ 节点 3: Code — 解析/校验 JSON ═══════════════════════════
+      - id: "code"
+        type: "code"
+        position:
+          x: 680
+          "y": 140
+        data:
+          title: "解析结果"
+          type: "code"
+          code_language: "python3"
+          code: |
+            import json
+
+            def main(llm_output: str) -> dict:
+                """解析 LLM 输出的 JSON 数组，确保格式正确"""
+                try:
+                    # 尝试直接解析
+                    results = json.loads(llm_output)
+                    if not isinstance(results, list):
+                        results = []
+                except json.JSONDecodeError:
+                    # 尝试提取 JSON 数组（LLM 可能在前后包裹了文本）
+                    import re
+                    match = re.search(r'\[.*\]', llm_output, re.DOTALL)
+                    if match:
+                        try:
+                            results = json.loads(match.group())
+                        except json.JSONDecodeError:
+                            results = []
+                    else:
+                        results = []
+
+                # 校验并清理每个结果项
+                valid_results = []
+                for item in results[:5]:
+                    if not isinstance(item, dict):
+                        continue
+                    valid_results.append({
+                        "book_id": str(item.get("book_id", "")),
+                        "title": str(item.get("title", "")),
+                        "author": str(item.get("author", "未知")),
+                        "match_reason": str(item.get("match_reason", "")),
+                        "score": int(item.get("score", 50)),
+                    })
+
+                return {"results": json.dumps(valid_results, ensure_ascii=False)}
+
+          variables:
+            - variable: "llm_output"
+              value_selector:
+                - "llm"
+                - "text"
+          outputs:
+            - name: "results"
+              type: "string"
+              children: null
+
+      # ══ 节点 4: 回答 — 返回结构化结果 ═════════════════════════════
+      - id: "answer"
+        type: "answer"
+        position:
+          x: 980
+          "y": 140
+        data:
+          title: "直接回复"
+          type: "answer"
+          answer: "{{#code.results#}}"

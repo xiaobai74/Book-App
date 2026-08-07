@@ -22,6 +22,10 @@ class BookResponse(BaseModel):
     chapter_count: int = 0
     has_epub: bool = False
     has_txt: bool = False
+    is_marked: bool = False
+    marked_at: datetime | None = None
+    ai_summary: str | None = None
+    ai_summary_at: datetime | None = None
     added_at: datetime
 
     class Config:
@@ -52,6 +56,7 @@ class SourceItem(BaseModel):
     url: str
     has_search: bool = False
     comment: str = ""
+    is_custom: bool = False
 
 
 class SearchResultItem(BaseModel):
@@ -112,3 +117,43 @@ class CrawlSourceTestResponse(BaseModel):
     chapter_count: int = 0
     sample_chapters: list[dict] = []  # [{"title": "...", "url": "..."}]
     error: str | None = None
+
+
+# ═══════════════════════════════════════════════════════════
+# v1.2 新增：章节 & 阅读进度
+# ═══════════════════════════════════════════════════════════
+
+class ChapterResponse(BaseModel):
+    """章节摘要（列表中展示）"""
+    index: int
+    title: str
+    word_count: int
+
+    class Config:
+        from_attributes = True
+
+
+class ChapterDetailResponse(BaseModel):
+    """章节详情（含正文内容）"""
+    index: int
+    title: str
+    content: str
+    word_count: int
+
+    class Config:
+        from_attributes = True
+
+
+class ReadingProgressResponse(BaseModel):
+    """阅读进度响应"""
+    book_id: str
+    last_chapter_index: int
+    updated_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class ReadingProgressUpdateRequest(BaseModel):
+    """更新阅读进度请求"""
+    chapter_index: int = Field(..., ge=1, description="当前阅读的章节序号（从 1 开始）")

@@ -386,6 +386,14 @@ h1, h2, h3, h4 { margin: 0; }
   padding: 0 20px;
 }
 
+.chapter-row.clickable {
+  cursor: pointer;
+}
+
+.chapter-row.clickable:hover {
+  background: var(--hover);
+}
+
 /* ─── Progress Bar ─────────────────────────────────── */
 .progress-bar {
   width: 100%;

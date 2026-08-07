@@ -41,7 +41,7 @@
                 <div style="font-weight:600">{{ source.name }}</div>
                 <div style="font-size:12px;color:var(--muted);word-break:break-all">{{ source.url }}</div>
                 <div style="font-size:11px;color:var(--muted);margin-top:2px">
-                  添加于 {{ formatDate(source.created_at) }}
+                  添加于 {{ formatDate(source.created_at || '') }}
                 </div>
               </div>
               <div style="display:flex;gap:8px">

@@ -22,7 +22,21 @@
         class="search-input"
         clearable
         @keyup.enter="handleSearch"
-      />
+      >
+        <template #prepend>
+          <el-select
+            v-model="searchTarget"
+            size="small"
+            style="width:100px"
+          >
+            <el-option label="书架内" value="shelf" />
+            <el-option label="全网搜索" value="web" />
+          </el-select>
+        </template>
+        <template #append>
+          <el-button :icon="Search" @click="handleSearch" />
+        </template>
+      </el-input>
 
       <div class="nav-right">
         <router-link v-if="showSettingsBtn" to="/settings">
@@ -56,17 +70,22 @@ withDefaults(defineProps<{
   showSearch: true,
   showSettingsBtn: true,
   showBackToShelf: false,
-  searchPlaceholder: '在书架中按书名搜索…'
+  searchPlaceholder: '输入书名，全网搜索…'
 })
 
 const authStore = useAuthStore()
 const router = useRouter()
 const searchQuery = ref('')
+const searchTarget = ref<'shelf' | 'web'>('web')
 
 function handleSearch() {
   const q = searchQuery.value.trim()
   if (!q) return
-  router.push(`/search?q=${encodeURIComponent(q)}`)
+  if (searchTarget.value === 'web') {
+    router.push(`/search?q=${encodeURIComponent(q)}`)
+  } else {
+    router.push(`/search?q=${encodeURIComponent(q)}&mode=shelf`)
+  }
 }
 
 function handleLogout() {
@@ -83,11 +102,11 @@ function handleLogout() {
 
 <style scoped>
 .search-input {
-  flex: 0 1 420px;
+  flex: 0 1 520px;
 }
 
 @media (max-width: 768px) {
-  .search-input { flex: 0 1 200px; }
+  .search-input { flex: 0 1 280px; }
 }
 
 @media (max-width: 640px) {

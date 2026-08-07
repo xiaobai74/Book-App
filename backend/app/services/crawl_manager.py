@@ -127,6 +127,8 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
 
     # ══ 3. 写入章节到 DB（新 session） ══
     logger.info(f"写入 {len(chapters)} 章到数据库…")
+    book_title = ""
+    book_author = ""
     async with async_session() as db:
         from sqlalchemy import delete, select
         result = await db.execute(select(Book).where(Book.id == book_id))
@@ -134,7 +136,10 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
         if not book:
             return
 
-        # 清除旧章节
+        book_title = book.title
+        book_author = book.author
+
+        # 清除旧章节（在这里删除 — 确保新内容已抓取成功）
         await db.execute(delete(Chapter).where(Chapter.book_id == book_id))
 
         for i, ch in enumerate(chapters):
@@ -152,55 +157,47 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
         book.status = "done"
         await db.commit()
 
+    # 注意：此时仍标记为 done，因为章节内容已成功获取
+    # EPUB/TXT 生成失败不影响 done 状态，仅在 progress 中记录错误
     _crawl_progress[book_id] = {
         "current": len(chapters),
         "total": len(chapters),
         "status": "done",
         "error": None,
     }
-    logger.info(f"《{book.title}》写入完成: {len(chapters)} 章")
+    logger.info(f"《{book_title}》章节写入完成: {len(chapters)} 章，开始生成电子书文件…")
 
-    # ══ 4. 生成 EPUB ══
+    # ══ 4. 生成 EPUB 和 TXT ══
+    epub_path = None
+    txt_path = None
+
+    # 生成 EPUB
     try:
         epub_path = await asyncio.get_event_loop().run_in_executor(
             _thread_pool,
             lambda: epub_service.generate(
-                book_id=book.id,
-                title=book.title,
-                author=book.author,
+                book_id=book_id,
+                title=book_title,
+                author=book_author,
                 chapters=[{"title": c.title, "content": c.content} for c in chapters],
             ),
         )
-        async with async_session() as db:
-            from sqlalchemy import select
-            result = await db.execute(select(Book).where(Book.id == book_id))
-            book = result.scalar_one_or_none()
-            if book:
-                book.epub_path = epub_path
-                await db.commit()
         logger.info(f"EPUB 已生成: {epub_path}")
     except Exception as e:
         logger.error(f"EPUB 生成失败: {e}")
         _crawl_progress[book_id]["error"] = f"章节抓取成功，但 EPUB 生成失败: {e}"
 
-    # ══ 5. 生成 TXT ══
+    # 生成 TXT
     try:
         txt_path = await asyncio.get_event_loop().run_in_executor(
             _thread_pool,
             lambda: txt_service.generate(
-                book_id=book.id,
-                title=book.title,
-                author=book.author,
+                book_id=book_id,
+                title=book_title,
+                author=book_author,
                 chapters=[{"title": c.title, "content": c.content} for c in chapters],
             ),
         )
-        async with async_session() as db:
-            from sqlalchemy import select
-            result = await db.execute(select(Book).where(Book.id == book_id))
-            book = result.scalar_one_or_none()
-            if book:
-                book.txt_path = txt_path
-                await db.commit()
         logger.info(f"TXT 已生成: {txt_path}")
     except Exception as e:
         logger.error(f"TXT 生成失败: {e}")
@@ -208,6 +205,21 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
         if current_error:
             current_error += "; "
         _crawl_progress[book_id]["error"] = f"{current_error}TXT 生成失败: {e}"
+
+    # 统一更新文件路径 — 使用单个 DB Session
+    if epub_path or txt_path:
+        async with async_session() as db:
+            from sqlalchemy import select
+            result = await db.execute(select(Book).where(Book.id == book_id))
+            book = result.scalar_one_or_none()
+            if book:
+                if epub_path:
+                    book.epub_path = epub_path
+                if txt_path:
+                    book.txt_path = txt_path
+                await db.commit()
+            else:
+                logger.warning(f"书籍 {book_id} 已被删除，文件路径未写入数据库")
 
     # 清理
     if book_id in _running_tasks:

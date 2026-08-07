@@ -7,11 +7,11 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
-from app.models.chapter import Chapter  # 确保 Chapter 模型已注册
+from app.models.chapter import Chapter  # noqa: F401  确保 Chapter 模型已注册
 
 
 def _now_utc() -> datetime:
@@ -42,6 +42,7 @@ class Book(Base):
         server_default="未知",
     )
     source_url: Mapped[str | None] = mapped_column(
+        String(2048),
         nullable=True,
     )
     epub_path: Mapped[str | None] = mapped_column(
@@ -64,6 +65,19 @@ class Book(Base):
         default=0,
         server_default="0",
     )
+    is_marked: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="0",
+        comment="标记状态：True=已标记/置顶，False=普通",
+    )
+    marked_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        default=None,
+        comment="标记时间（用于置顶排序）",
+    )
     added_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=_now_utc,
@@ -82,6 +96,18 @@ class Book(Base):
         nullable=True,
         default=None,
     )
+    ai_summary: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        default=None,
+        comment="AI 生成的书籍摘要（含角色列表和风格标签）",
+    )
+    ai_summary_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        default=None,
+        comment="AI 摘要生成时间",
+    )
 
     # 关联
     user: Mapped["User"] = relationship(
@@ -94,6 +120,12 @@ class Book(Base):
         back_populates="book",
         lazy="selectin",
         cascade="all, delete-orphan",
+    )
+    reading_progress: Mapped["ReadingProgress | None"] = relationship(
+        "ReadingProgress",
+        back_populates="book",
+        uselist=False,
+        lazy="selectin",
     )
 
     def __repr__(self) -> str:

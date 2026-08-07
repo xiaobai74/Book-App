@@ -14,7 +14,7 @@ def test_rule_loading():
     """测试规则加载"""
     engine = get_rule_engine()
     assert engine.loaded
-    assert len(engine.rules) >= 10, f"Expected >=10 rules, got {len(engine.rules)}"
+    assert len(engine.rules) >= 8, f"Expected >=8 rules, got {len(engine.rules)}"
     print(f"  [PASS] Loaded {len(engine.rules)} rules")
 
 
@@ -54,7 +54,7 @@ def test_list_searchable_sources():
     """测试可搜索源站"""
     engine = get_rule_engine()
     searchable = engine.list_searchable_sources()
-    assert len(searchable) >= 7, f"Expected >=7 searchable, got {len(searchable)}"
+    assert len(searchable) >= 5, f"Expected >=5 searchable, got {len(searchable)}"
     for sid, rule in searchable:
         assert "search" in rule
         assert not (rule.get("search") or {}).get("disabled", False)

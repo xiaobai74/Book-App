@@ -51,6 +51,12 @@ const router = createRouter({
       name: 'CrawlSources',
       component: () => import('@/views/CrawlSourcesView.vue'),
       meta: { requiresAuth: true }
+    },
+    {
+      path: '/reader/:id/:chapterIndex',
+      name: 'Reader',
+      component: () => import('@/views/ReaderView.vue'),
+      meta: { requiresAuth: true }
     }
   ]
 })

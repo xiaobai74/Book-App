@@ -158,8 +158,10 @@ p { text-indent: 2em; margin: 0.5em 0; }
         book.add_item(epub.EpubNav())
 
         # ── 写入文件 ────────────────────────────────
+        # 使用 book_id 作为文件名前缀，防止同名书覆盖
         safe_title = "".join(c for c in title if c.isalnum() or c in " _-（）()").strip()
-        filename = f"{safe_title}-{author}.epub"
+        safe_title = safe_title or "book"  # 标题全部被过滤时使用默认值
+        filename = f"({book_id}){safe_title}-{author}.epub"
         filepath = str(self.output_dir / filename)
 
         epub.write_epub(filepath, book, {})

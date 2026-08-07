@@ -40,7 +40,8 @@ class TxtService:
             生成的文件路径
         """
         safe_title = "".join(c for c in title if c.isalnum() or c in " _-（）()").strip()
-        filename = f"{safe_title}-{author}.txt"
+        safe_title = safe_title or "book"  # 标题全部被过滤时使用默认值
+        filename = f"({book_id}){safe_title}-{author}.txt"
         filepath = str(self.output_dir / filename)
 
         lines: list[str] = []
@@ -55,8 +56,12 @@ class TxtService:
             ch_title = ch.get("title", f"第{i + 1}章")
             ch_content = ch.get("content", "")
 
-            # 章节标题
-            lines.append(f"\n第{i + 1}章  {ch_title}\n")
+            # 章节标题：避免重复编号（如原标题已是"第1章 xxx"则不再添加前缀）
+            import re as _re
+            if _re.match(r"第\s*\d+\s*[章节回]", ch_title.strip()):
+                lines.append(f"\n{ch_title}\n")
+            else:
+                lines.append(f"\n第{i + 1}章  {ch_title}\n")
             lines.append("")
 
             # 章节内容：按段落写入

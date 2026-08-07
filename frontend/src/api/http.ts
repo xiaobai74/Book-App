@@ -6,7 +6,7 @@ import type { ApiResponse } from '@/types'
 
 const http = axios.create({
   baseURL: '/api/v1',
-  timeout: 15000,
+  timeout: 60000,  // 60 秒，匹配后端外部搜索源站超时（30s 单源站 + 重试）
   headers: { 'Content-Type': 'application/json' }
 })
 

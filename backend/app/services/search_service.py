@@ -12,6 +12,7 @@ import re
 import ssl
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote, urljoin as _urljoin
 
 import httpx
 from bs4 import BeautifulSoup
@@ -196,11 +197,18 @@ class SearchService:
                 else:
                     # GET 请求: data 作为 query string 拼接
                     # search_url 可能已包含 %s 占位符
-                    url = search_url.replace("%s", httpx.Quote(keyword) if "%s" in search_url else keyword)
-                    if "%s" not in search_url:
-                        from urllib.parse import urlencode
+                    if "%s" in search_url:
+                        url = search_url.replace("%s", quote(keyword))
+                    else:
+                        # 关键词不在 URL 中时，作为查询参数拼接
+                        url = search_url
                         if data:
-                            url = f"{url}?{data}"
+                            # data 模板中的 %s 也需编码
+                            encoded_data = data.replace("%s", quote(keyword))
+                            from urllib.parse import urlencode
+                            url = f"{url}?{encoded_data}"
+                        else:
+                            url = f"{url}?q={quote(keyword)}"
                     html = await self._get(client, url)
 
                 results = self._parse_search_results(
@@ -214,7 +222,7 @@ class SearchService:
                         more = await self._fetch_search_pages(
                             client, search_url, method, data, rule,
                             source_id, source_name, search_limit,
-                            results,
+                            results, html,
                         )
                         results.extend(more)
 
@@ -238,13 +246,73 @@ class SearchService:
         source_name: str,
         limit: int,
         existing: list[SearchResult],
+        first_page_html: str = "",
     ) -> list[SearchResult]:
-        """获取搜索结果的后续分页。"""
+        """获取搜索结果的后续分页，最多翻 2 页。"""
         search_rule = rule.get("search", {})
         next_selector = search_rule.get("nextPage", "")
-        # 简化：搜索结果翻页暂时最多翻 2 页
-        # 完整实现需要维护分页状态
-        return []
+        if not next_selector:
+            return []
+
+        all_results: list[SearchResult] = list(existing)
+        current_html = first_page_html
+        max_extra_pages = 2
+
+        for _ in range(max_extra_pages):
+            if len(all_results) >= limit:
+                break
+
+            # 需要 HTML 来查找下一页链接
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(current_html or "", "html.parser")
+
+            # 查找下一页链接
+            next_el = self._select_one(soup, next_selector)
+            if not next_el:
+                break
+
+            next_url = None
+            if next_el.name == "a":
+                next_url = next_el.get("href", "")
+            elif next_el.name == "option":
+                next_url = next_el.get("value", "")
+
+            if not next_url or next_url == "#":
+                break
+
+            # 补全相对 URL
+            if not next_url.startswith("http"):
+                from urllib.parse import urljoin
+                next_url = urljoin(base_url, next_url)
+
+            try:
+                if method == "post":
+                    resp = await client.post(next_url)
+                else:
+                    resp = await client.get(next_url)
+                resp.raise_for_status()
+                current_html = SearchService._decode_response(resp)
+            except Exception as e:
+                logger.warning(f"搜索分页请求失败: {e}")
+                break
+
+            # 解析当前页结果
+            page_results = self._parse_search_results(
+                current_html, rule, source_id, source_name, limit,
+            )
+            if not page_results:
+                break
+
+            # 去重后追加
+            for r in page_results:
+                if len(all_results) >= limit:
+                    break
+                key = r.unique_key
+                if not any(x.unique_key == key for x in all_results):
+                    all_results.append(r)
+
+        # 返回新增的结果（不包括原本已有的）
+        return all_results[len(existing):]
 
     # ── 结果解析 ──────────────────────────────────────
 
@@ -274,13 +342,18 @@ class SearchService:
         seen_urls: set[str] = set()
 
         for row in row_elements[:limit]:
-            result = SearchResult(source_name=source_name, source_id=source_id)
-
-            # 提取各字段
-            result.title = self._extract_field(row, search_rule, "bookName", "text") or ""
-            if not result.title or len(result.title) < 1:
+            # 先提取 title，因为构造函数依赖它
+            extracted_title = self._extract_field(row, search_rule, "bookName", "text") or ""
+            if not extracted_title or len(extracted_title) < 1:
                 continue
 
+            result = SearchResult(
+                title=extracted_title,
+                source_name=source_name,
+                source_id=source_id,
+            )
+
+            # 提取其他字段
             result.author = self._extract_field(row, search_rule, "author", "text") or "未知"
             result.category = self._extract_field(row, search_rule, "category", "text") or ""
             result.latest_chapter = self._extract_field(row, search_rule, "latestChapter", "text") or ""
@@ -344,17 +417,18 @@ class SearchService:
 
     @staticmethod
     def _select_one(soup, selector: str):
-        """选择单个元素（CSS Selector）。"""
+        """选择单个元素（CSS Selector），支持 @attr 后缀提取属性值。"""
         if not selector:
             return None
-        # 处理 @js: 后缀和 @attr 后缀
+
         attr_name = None
-        if "@" in selector:
-            parts = selector.split("@", 1)
-            selector = parts[0]
-            suffix = parts[1]
-            if not suffix.startswith("js:"):
+        # 与 CrawlerService 一致：查找最后一个 @ 且不是 CSS 属性选择器
+        last_at_idx = selector.rfind("@")
+        if last_at_idx > 0:
+            suffix = selector[last_at_idx + 1:]
+            if not suffix.startswith("js:") and "=" not in suffix:
                 attr_name = suffix.strip()
+                selector = selector[:last_at_idx]
 
         result = soup.select_one(selector)
         if result and attr_name:
@@ -363,13 +437,97 @@ class SearchService:
 
     @staticmethod
     def _select_all(soup, selector: str) -> list:
-        """选择所有匹配元素。"""
+        """选择所有匹配元素（CSS Selector），支持 @attr 后缀提取属性值。"""
         if not selector:
             return []
-        # 处理 @js: 后缀
-        if "@" in selector:
-            selector = selector.split("@", 1)[0]
-        return soup.select(selector)
+
+        attr_name = None
+        # 与 CrawlerService 一致：查找最后一个 @ 且不是 CSS 属性选择器
+        last_at_idx = selector.rfind("@")
+        if last_at_idx > 0:
+            suffix = selector[last_at_idx + 1:]
+            if not suffix.startswith("js:") and "=" not in suffix:
+                attr_name = suffix.strip()
+                selector = selector[:last_at_idx]
+
+        results = soup.select(selector)
+        if attr_name and results:
+            return [r.get(attr_name, "") for r in results]
+        return results
+
+    # ── 编码检测 & 解码 ─────────────────────────────
+
+    @staticmethod
+    def _decode_response(resp: httpx.Response) -> str:
+        """从 httpx Response 中安全解码 HTML 正文。
+
+        优先使用服务器声明的 charset_encoding，其次从 HTML <meta> 标签检测，
+        最后回退为 utf-8。必须先设置 encoding 再访问 .text，否则 httpx 会锁定编码。
+
+        同时检测反爬/限流页面，如果页面内容主要是 JS 跳转或错误提示，
+        抛出 RuntimeError 而不是返回空 HTML 让选择器静默失败。
+        """
+        encoding: str | None = resp.charset_encoding
+        if not encoding:
+            # 从原始字节中检测 HTML charset 声明（避免触发 .text 的编码锁定）
+            encoding = SearchService._detect_encoding(resp.content[:4096])
+        resp.encoding = encoding or "utf-8"
+        text = resp.text
+
+        # 检测反爬/限流页面
+        error_msg = SearchService._check_block_page(text)
+        if error_msg:
+            raise RuntimeError(f"搜索被拦截: {error_msg}")
+
+        return text
+
+    @staticmethod
+    def _check_block_page(html: str) -> str | None:
+        """检测搜索页面是否被反爬或限流拦截。
+
+        常见模式：
+        - JS alert 提示搜索间隔
+        - 错误提示页面（无搜索结果）
+        - 验证码/人机验证页面
+        - 页面重定向（无实际内容）
+
+        Returns:
+            拦截原因字符串，如果页面正常则返回 None。
+        """
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+
+        # 模式 1: inline script alert
+        for script in soup.find_all("script"):
+            text = script.get_text(strip=True)
+            if "alert(" in text and any(
+                kw in text.lower() for kw in ("搜索间隔", "稍后", "请稍后", "频率", "太快")
+            ):
+                import re
+                alert_text = re.search(r"alert\s*\(\s*['\"](.+?)['\"]\s*\)", text)
+                if alert_text:
+                    return alert_text.group(1)
+                return "疑似搜索频率限制"
+
+        # 模式 2: 页面标题是"错误提示"或类似
+        title = soup.find("title")
+        if title:
+            title_text = title.get_text(strip=True)
+            if "错误提示" in title_text:
+                # 提取具体错误信息
+                body = soup.find("body")
+                if body:
+                    error_parts = [p.get_text(strip=True) for p in body.find_all("p") if p.get_text(strip=True)]
+                    if error_parts:
+                        return f"源站返回错误页: {error_parts[0][:100]}"
+                return "源站返回错误页"
+
+        # 模式 3: 页面几乎为空，可能被跳转
+        body = soup.find("body")
+        if not body or len(body.get_text(strip=True)) < 5:
+            return "返回页面内容为空，可能被拦截或跳转"
+
+        return None
 
     # ── HTTP 请求 ─────────────────────────────────────
 
@@ -380,11 +538,10 @@ class SearchService:
             try:
                 resp = await client.get(url)
                 resp.raise_for_status()
-                if resp.charset_encoding:
-                    resp.encoding = resp.charset_encoding
-                else:
-                    resp.encoding = self._detect_encoding(resp.text[:4096]) or "utf-8"
-                return resp.text
+                return SearchService._decode_response(resp)
+            except RuntimeError:
+                # 反爬/限流检测异常，不重试，直接抛出
+                raise
             except httpx.HTTPStatusError as e:
                 last_err = e
                 if e.response.status_code in (403, 404, 410):
@@ -415,11 +572,10 @@ class SearchService:
             try:
                 resp = await client.post(url, data=data)
                 resp.raise_for_status()
-                if resp.charset_encoding:
-                    resp.encoding = resp.charset_encoding
-                else:
-                    resp.encoding = self._detect_encoding(resp.text[:4096]) or "utf-8"
-                return resp.text
+                return SearchService._decode_response(resp)
+            except RuntimeError:
+                # 反爬/限流检测异常，不重试，直接抛出
+                raise
             except httpx.HTTPStatusError as e:
                 last_err = e
                 if e.response.status_code in (403, 404, 410):
@@ -438,14 +594,28 @@ class SearchService:
         raise RuntimeError(f"搜索请求失败，已重试 {retries} 次: {last_err}")
 
     @staticmethod
-    def _detect_encoding(text_fragment: str) -> str | None:
-        """检测 HTML 编码。"""
-        m = re.search(
-            r'<meta[^>]+charset\s*=\s*["\']?\s*([\w-]+)',
-            text_fragment,
-            re.IGNORECASE,
-        )
-        return m.group(1) if m else None
+    def _detect_encoding(raw_bytes: bytes) -> str | None:
+        """从 HTML meta 标签中检测编码，支持多编码回退。"""
+        candidates = ["utf-8", "gbk", "gb2312", "gb18030", "big5", "latin-1"]
+        head = raw_bytes[:4096]
+
+        for encoding in candidates:
+            try:
+                fragment = head.decode(encoding)
+                m = re.search(
+                    r'<meta[^>]+charset\s*=\s*["\']?\s*([\w-]+)',
+                    fragment,
+                    re.IGNORECASE,
+                )
+                if m:
+                    detected = m.group(1)
+                    if detected.lower() in ("gb2312", "gbk", "gb18030"):
+                        return "gbk"
+                    return detected
+            except (UnicodeDecodeError, LookupError):
+                continue
+
+        return None
 
     # ── Cookies/Data 解析 ─────────────────────────────
 

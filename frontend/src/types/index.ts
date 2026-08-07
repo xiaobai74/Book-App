@@ -15,18 +15,42 @@ export interface Book {
   chapter_count: number
   has_epub: boolean
   has_txt: boolean
+  is_marked: boolean
+  marked_at: string | null
   added_at: string
 }
 
 /** 书籍详情（含章节列表） */
 export interface BookDetail extends Book {
-  chapters: Chapter[]
+  chapters: ChapterSummary[]
 }
 
-/** 章节数据 */
+/** 章节摘要（列表中展示） */
+export interface ChapterSummary {
+  index: number
+  title: string
+  word_count: number
+}
+
+/** 章节详情（含正文） */
+export interface ChapterDetail {
+  index: number
+  title: string
+  content: string
+  word_count: number
+}
+
+/** 章节数据（旧版兼容） */
 export interface Chapter {
   title: string
   wordCount: number
+}
+
+/** 阅读进度 */
+export interface ReadingProgress {
+  book_id: string
+  last_chapter_index: number
+  updated_at: string | null
 }
 
 /** 抓取进度 */
@@ -120,6 +144,7 @@ export interface SourceItem {
   url: string
   has_search: boolean
   comment: string
+  is_custom: boolean
 }
 
 /** 自定义抓取源站 */
@@ -152,4 +177,13 @@ export interface CrawlSourceTestResult {
   chapter_count: number
   sample_chapters: { title: string; url: string }[]
   error: string | null
+}
+
+/** AI 搜索结果项（v1.3 新增） */
+export interface AiSearchResult {
+  book_id: string
+  title: string
+  author: string
+  match_reason: string
+  score: number
 }

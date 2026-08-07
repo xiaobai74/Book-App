@@ -3,7 +3,7 @@
 
 GET    /api/v1/books                → 书架列表
 POST   /api/v1/books                → 添加书籍
-DELETE /api/v1/books/{book_id}      → 删除书籍
+DELETE /api/v1/books/{book_id}      → 删除书籍（v1.2 清理本地文件）
 GET    /api/v1/books/{book_id}      → 书籍详情
 
 GET    /api/v1/search?q=&page=1    → 在线搜索（书架内 + 外部源站）
@@ -11,8 +11,15 @@ GET    /api/v1/sources              → 获取可用源站列表
 
 POST   /api/v1/books/{book_id}/crawl        → 触发抓取
 GET    /api/v1/books/{book_id}/crawl-status → 查询抓取进度
-GET    /api/v1/books/{book_id}/download     → 下载 .epub
+GET    /api/v1/books/{book_id}/download     → 下载 .epub/.txt
 POST   /api/v1/crawl/check-url              → 检查 URL 连通性
+
+v1.2 新增：
+PUT    /api/v1/books/{book_id}/mark                 → 标记/取消标记
+GET    /api/v1/books/{book_id}/chapters             → 章节列表
+GET    /api/v1/books/{book_id}/chapters/{index}     → 章节内容
+GET    /api/v1/books/{book_id}/progress             → 阅读进度
+PUT    /api/v1/books/{book_id}/progress             → 更新阅读进度
 
 GET    /api/v1/crawl-sources                → 列出自定义源站
 POST   /api/v1/crawl-sources                → 创建自定义源站
@@ -36,17 +43,27 @@ from app.models.user import User
 from app.schemas.book import (
     BookCreateRequest,
     BookResponse,
+    ChapterDetailResponse,
+    ChapterResponse,
     CrawlSourceCreate,
     CrawlSourceResponse,
     CrawlSourceTestRequest,
     CrawlSourceTestResponse,
     CrawlSourceUpdate,
     CrawlStatusResponse,
+    ReadingProgressResponse,
+    ReadingProgressUpdateRequest,
     SearchResultItem,
     SourceItem,
 )
 from app.schemas.common import ApiResponse, PaginationMeta
-from app.services.book_service import BookService, book_to_response
+from app.services.book_service import (
+    BookService,
+    book_to_response,
+    chapter_to_detail_response,
+    chapter_to_response,
+    progress_to_response,
+)
 from app.services.crawl_source_service import CrawlSourceService
 from app.services.crawler_service import crawler
 from app.services.search_service import search_service
@@ -66,12 +83,15 @@ router = APIRouter(tags=["书架 / 搜索 / 抓取"])
 )
 async def list_books(
     page: int = Query(default=1, ge=1, description="页码"),
-    page_size: int = Query(default=20, ge=1, le=100, description="每页数量"),
+    page_size: int = Query(default=20, ge=1, le=500, description="每页数量"),
+    marked: bool | None = Query(default=None, description="筛选：仅已标记/全部"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取当前用户的书架列表，按添加时间倒序"""
-    books, total = await BookService.get_books(db, current_user, page, page_size)
+    """获取当前用户的书架列表，已标记书籍置顶，支持按标记筛选"""
+    books, total = await BookService.get_books(
+        db, current_user, page, page_size, filter_marked=marked,
+    )
     items = [book_to_response(b) for b in books]
 
     return ApiResponse.ok(
@@ -125,9 +145,98 @@ async def delete_book(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """软删除书架上的指定书籍"""
+    """软删除书架上的指定书籍，同时清理本地 .epub/.txt 文件"""
     await BookService.delete_book(db, current_user, book_id)
     return ApiResponse.ok(data=None)
+
+
+# ============================================================
+# v1.2 新增：标记与置顶
+# ============================================================
+
+@router.put(
+    "/books/{book_id}/mark",
+    response_model=ApiResponse[BookResponse],
+    summary="标记/取消标记书籍",
+)
+async def toggle_mark_book(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """切换书籍的标记状态，已标记的书籍自动置顶到书架顶部"""
+    book = await BookService.toggle_mark(db, current_user, book_id)
+    return ApiResponse.ok(data=book_to_response(book))
+
+
+# ============================================================
+# v1.2 新增：在线阅读器
+# ============================================================
+
+@router.get(
+    "/books/{book_id}/chapters",
+    response_model=ApiResponse[list[ChapterResponse]],
+    summary="获取章节列表",
+)
+async def list_chapters(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取书籍的全部章节列表（按序号升序排列，不含正文内容）"""
+    chapters = await BookService.get_chapters(db, current_user, book_id)
+    return ApiResponse.ok(data=[chapter_to_response(c) for c in chapters])
+
+
+@router.get(
+    "/books/{book_id}/chapters/{chapter_index}",
+    response_model=ApiResponse[ChapterDetailResponse],
+    summary="获取章节内容",
+)
+async def get_chapter_content(
+    book_id: str,
+    chapter_index: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取指定章节的正文内容，用于在线阅读器渲染"""
+    chapter = await BookService.get_chapter_content(
+        db, current_user, book_id, chapter_index,
+    )
+    return ApiResponse.ok(data=chapter_to_detail_response(chapter))
+
+
+@router.get(
+    "/books/{book_id}/progress",
+    response_model=ApiResponse[ReadingProgressResponse],
+    summary="获取阅读进度",
+)
+async def get_reading_progress(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取用户在该书的最后阅读章节序号"""
+    progress = await BookService.get_reading_progress(db, current_user, book_id)
+    return ApiResponse.ok(data=progress)
+
+
+@router.put(
+    "/books/{book_id}/progress",
+    response_model=ApiResponse[ReadingProgressResponse],
+    summary="更新阅读进度",
+)
+async def update_reading_progress(
+    book_id: str,
+    data: ReadingProgressUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """更新用户在该书的阅读进度（upsert），下次进入时自动恢复"""
+    progress = await BookService.update_reading_progress(
+        db, current_user, book_id, data.chapter_index,
+    )
+    return ApiResponse.ok(data=progress)
 
 
 # ============================================================
@@ -142,7 +251,7 @@ async def delete_book(
 async def search_books(
     q: str = Query(..., min_length=1, description="搜索关键词"),
     page: int = Query(default=1, ge=1, description="页码"),
-    page_size: int = Query(default=20, ge=1, le=100, description="每页数量"),
+    page_size: int = Query(default=20, ge=1, le=500, description="每页数量"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -271,7 +380,7 @@ async def get_crawl_status(
 )
 async def download_book(
     book_id: str,
-    format: str = Query(default="epub", regex="^(epub|txt)$", description="下载格式：epub 或 txt"),
+    format: str = Query(default="epub", pattern="^(epub|txt)$", description="下载格式：epub 或 txt"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):

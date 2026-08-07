@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-一个日常小说管理 App（Web 端），帮助用户搜索、抓取网络小说，生成 `.epub` 电子书并集中管理个人书架。
+一个日常小说管理 App（Web 端），帮助用户搜索、抓取网络小说，生成 `.epub`/`.txt` 电子书，支持 App 内在线阅读，集中管理个人书架。
 
 - **产品需求文档**：`PRD-小说管理App.md`
 - **远程仓库**：`https://github.com/xiaobai74/Book-App.git`
@@ -49,19 +49,84 @@ GIT_TERMINAL_PROMPT=0 git push origin master
 
 ### 当前文件结构
 
-- **`PRD-小说管理App.md`** — 产品需求文档，包含功能需求、信息架构、API 设计、数据库表设计、色板参考
-- **`api/API文档.md`** — 18 个 API 接口的完整文档（请求/响应示例、错误码、通用抓取规则说明、自定义源站配置说明）
+- **`PRD-小说管理App.md`** — 产品需求文档（v1.3），含功能需求、信息架构、API 设计、数据库表设计、色板参考
 - **`frontend/`** — Vue 3 前端工程（组件、路由、状态管理、API 封装）
 - **`backend/`** — Python FastAPI 后端（路由、模型、服务、中间件）
-  - `backend/app/models/` — ORM 模型：User、Book、Chapter、RefreshToken、CrawlSource
-  - `backend/app/services/` — 服务层：crawler_service（规则驱动爬虫引擎）、search_service（外部源站搜索）、crawl_manager（后台抓取流水线）、epub_service、txt_service、crawl_source_service（自定义源站 CRUD）
+  - `backend/app/models/` — ORM 模型：User、Book、Chapter、RefreshToken、CrawlSource、ReadingProgress（v1.2 新增）
+  - `backend/app/services/` — 服务层：crawler_service（规则驱动爬虫引擎）、search_service（外部源站搜索）、crawl_manager（后台抓取流水线）、epub_service、txt_service、book_service（含标记/阅读进度逻辑 + 双字段搜索，v1.2 扩展）、ai_service（AI 语义搜索/摘要，v1.3 新增）、crawl_source_service（自定义源站 CRUD）
+  - `backend/app/api/v1/ai.py` — AI 功能路由（v1.3 新增）：语义搜索、摘要生成
   - `backend/rules/` — 规则引擎 + main.json（10 个内置源站规则）+ custom_sources.json（用户自定义规则）
   - `backend/rules/rule_engine.py` — 规则加载、域名匹配、通用回退规则生成、自定义规则持久化
   - `backend/epub_output/` — 生成的 EPUB 文件
   - `backend/txt_output/` — 生成的 TXT 文件
+  - `backend/dify-workflows/` — Dify AI 工作流定义（v1.3 新增）：语义搜索、摘要生成
+  - `backend/migrations/` — 数据库迁移脚本（v1.2 标记+进度 + v1.3 AI 摘要字段）
+- **`docs/`** — 文档目录
+  - `docs/书架快速检索工作流-知识库.md` — 书架快速检索功能知识库（SHELF-001）
+  - `docs/dify-knowledge/` — Dify 知识库拆分文档（01-08 共 8 个章节）
+- **`test/`** — 测试目录
+  - `test/test plan/` — 前后端测试计划
+  - `test/test report/` — 测试报告
+- **`api/API文档.md`** — API 接口完整文档（待更新 v1.3 新增的 AI 接口）
 - **`pyproject.toml`** — 项目元数据（Python ≥ 3.12，无依赖）
 - **`.gitignore`** — 排除虚拟环境、IDE 配置、环境变量文件
 - **`.venv/`** — 本地虚拟环境
+
+## v1.2 开发规划（✅ 已完成）
+
+v1.2 已实现并合入 master，新增两大功能模块 + 删除功能增强：
+
+### 在线阅读器
+- 新增 **ReaderView.vue**（阅读器页面）路由 `/reader/:id/:chapterIndex`
+- 新增 API 接口：
+  - `GET /api/v1/books/{book_id}/chapters` — 获取章节列表
+  - `GET /api/v1/books/{book_id}/chapters/{chapter_index}` — 获取章节内容
+  - `GET /api/v1/books/{book_id}/progress` — 获取阅读进度
+  - `PUT /api/v1/books/{book_id}/progress` — 更新阅读进度
+- 新增数据库表：`reading_progress`（阅读进度持久化）
+- 新增 ORM 模型：`ReadingProgress`
+
+### 标记与置顶
+- 新增 API 接口：`PUT /api/v1/books/{book_id}/mark` — 切换标记状态
+- Book 模型新增字段：`is_marked`（Boolean）、`marked_at`（DateTime）
+- 书架排序逻辑变更：已标记书籍置顶（按标记时间倒序），未标记书籍按添加时间倒序
+- 书架新增筛选栏："全部 / 已标记"
+- 星标图标：空心 ☆ / 实心 ★，颜色 `#c9a96e`（冷调金色）
+
+### 删除功能增强
+- `DELETE /api/v1/books/{book_id}` 行为变更：软删除数据库记录的同时，自动检查并删除 `backend/epub_output/` 和 `backend/txt_output/` 中的对应本地文件
+- `BookService.delete_book` 已实现文件清理逻辑：
+  - 查询 Book 的 `epub_path` 和 `txt_path` 字段
+  - 逐个调用 `os.remove()` 删除文件
+  - 文件不存在时跳过（不抛异常），权限不足时记录日志
+  - 文件删除失败不影响数据库软删除的正常执行
+- 删除确认弹窗文案："确定要删除《xxx》吗？`.epub` 和 `.txt` 文件将同时被删除"
+
+### 书架快速检索（v1.2 新增）
+- ShelfView.vue 新增搜索栏：书名+作者双字段模糊搜索，300ms 防抖，≥2 字符触发
+- Pinia Store 新增 `allBooks`/`filteredBooks` 客户端缓存和过滤
+- `backend/app/services/book_service.py` `search_books` 扩展为书名+作者双字段 OR 搜索
+- 新增 CommandPalette.vue：Ctrl+K 全局命令面板，支持键盘导航和最近阅读
+- 筛选标签：全部 / 已标记 / 抓取完成 / 有 EPUB
+
+详细的 Pydantic Schema 设计见 PRD 文档。
+
+## v1.3 开发规划（✅ 已完成）
+
+v1.3 已实现并合入 master，新增 AI 语义搜索：
+
+### AI 语义搜索
+- 新增 `backend/app/services/ai_service.py`：Dify 工作流集成，向量匹配语义搜索
+- 新增 `backend/app/api/v1/ai.py`：`POST /api/v1/ai/search` 端点
+- ShelfView.vue 新增搜索模式切换：普通 / 🤖 AI 语义
+- types/index.ts 新增 `AiSearchResult` 类型（含 match_reason 和 score）
+- `backend/dify-workflows/shelf-semantic-search.yml`：Dify 语义搜索工作流定义
+
+### AI 摘要生成
+- 新增 `POST /api/v1/ai/summary/{book_id}` — 触发 AI 摘要生成
+- 新增 `GET /api/v1/ai/summary/{book_id}` — 获取 AI 摘要
+- books 表新增 `ai_summary` 和 `ai_summary_at` 字段
+- `backend/migrations/add_ai_summary.sql`：AI 摘要字段迁移脚本
 
 ## 自定义约束
 

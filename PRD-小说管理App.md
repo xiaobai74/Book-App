@@ -1,10 +1,10 @@
 # 日常小说管理App -- 产品需求文档（PRD）
 
-> **版本**：v1.1
+> **版本**：v1.3
 > **作者**：资深产品经理
 > **日期**：2026-07-21
-> **最后更新**：2026-07-26
-> **状态**：草案
+> **最后更新**：2026-08-07
+> **状态**：v1.2 已完成，v1.3 已完成，文档已反映当前实现
 
 ---
 
@@ -24,12 +24,13 @@
 
 ### 1.3 核心价值
 
-- **搜得到**：内置搜索引擎，一键查找目标小说
+- **搜得到**：内置搜索引擎，一键查找目标小说；支持书架快速检索（模糊搜索 + AI 语义搜索）和外部源站全网搜索
 - **抓得下**：自动爬取正文内容，无需手动复制粘贴
 - **通用抓取**：支持任意小说网站 URL，自动适配未配置的源站
-- **管得住**：私人书架管理，支持添加、删除、浏览
-- **阅得了**：输出标准 `.epub` 和 `.txt` 格式，兼容主流电子书设备
+- **管得住**：私人书架管理，支持添加、删除、浏览、标记置顶
+- **阅得了**：输出标准 `.epub` 和 `.txt` 格式，兼容主流电子书设备；同时支持 App 内直接在线阅读已下载的书籍，自动记录阅读进度
 - **可扩展**：支持用户自定义源站抓取规则，提高特定网站的抓取精确度
+- **AI 赋能**（v1.3 新增）：AI 语义搜索用自然语言在书架中找书，AI 自动生成小说摘要（含角色列表和风格标签）
 
 ---
 
@@ -54,14 +55,19 @@
 
 | ID | 功能 | 描述 | 优先级 |
 |----|------|------|--------|
-| SHELF-001 | 查看书架 | 以列表形式展示已有小说，每项显示书名、作者、添加时间、是否有 `.epub` 文件 | P0 |
+| SHELF-001 | 查看书架 | 以列表形式展示已有小说，每项显示书名、作者、添加时间、是否有 `.epub` 文件。支持书架内嵌搜索栏模糊搜索（v1.2），支持 AI 语义搜索（v1.3） | P0 |
 | SHELF-002 | 添加小说 | 用户手动输入书名和作者，将小说加入书架 | P0 |
-| SHELF-003 | 删除小说 | 从书架中删除指定小说（软删除，前端提示确认） | P0 |
-| SHELF-004 | 书架搜索 | 在已有书架中按书名模糊搜索 | P2 |
+| SHELF-003 | 删除小说 | 从书架中删除指定小说（软删除，同时清理本地 `.epub`/`.txt` 文件，释放存储空间），前端提示确认 | P0 |
+| SHELF-004 | 书架快速检索 | 在书架页内嵌搜索栏实时搜索已有书籍，支持书名+作者双字段模糊匹配（300ms 防抖，≥2 字符触发），支持普通搜索和 AI 语义搜索模式切换。新增 Ctrl+K 全局命令面板（类 VS Code 快速打开） | P0 |
 
 **验收标准**：
-- 书架列表按添加时间倒序排列
-- 删除操作需弹出二次确认弹窗："确定要删除《xxx》吗？"
+- 书架列表按添加时间倒序排列（v1.2：已标记书籍置顶优先，详见 2.6 节）
+- 书架页顶部内嵌搜索栏，支持普通搜索（书名+作者，300ms 防抖）和 AI 语义搜索模式切换（v1.3）
+- Ctrl+K 唤起全局命令面板，支持键盘导航、最近阅读快捷入口（v1.2）
+- 书架支持筛选标签：全部 / 已标记 / 抓取完成 / 有 EPUB（v1.2）
+- 删除操作需弹出二次确认弹窗："确定要删除《xxx》吗？`.epub` 和 `.txt` 文件将同时被删除"
+- 删除时后端自动检查并删除对应的 `backend/epub_output/` 和 `backend/txt_output/` 中的本地文件，释放磁盘空间
+- 文件删除失败不影响数据库删除（文件不存在时跳过，权限不足时记录日志）
 - 空书架时展示占位提示文案："书架空空如也，去搜索一本小说吧～"
 
 ### 2.3 在线搜索模块（P0）
@@ -97,6 +103,55 @@
 - 章节顺序与源站一致，无缺章漏章
 - 文件名格式：`《书名》-作者.epub` / `《书名》-作者.txt`
 - 通用抓取：任意小说网站 URL 应当至少能成功解析章节列表（成功率取决于目标网站 HTML 结构的规范性）
+
+### 2.5 在线阅读器模块（P0 — v1.2 新增）
+
+| ID | 功能 | 描述 | 优先级 |
+|----|------|------|--------|
+| READER-001 | 章节列表 | 在书籍详情页展示完整章节列表，显示章节序号和标题，点击进入阅读 | P0 |
+| READER-002 | 阅读器页面 | 专用阅读器页面，展示章节正文内容，上下滚动连续阅读 | P0 |
+| READER-003 | 章节导航 | 阅读器底部提供"上一章 / 下一章"按钮，支持键盘左右方向键翻章 | P0 |
+| READER-004 | 进度记录 | 自动记录用户每本书的最后阅读章节，下次打开时恢复到上次阅读位置 | P1 |
+| READER-005 | 目录跳转 | 阅读器侧边栏或顶部提供目录入口，点击章节标题直接跳转 | P1 |
+| READER-006 | 阅读设置 | 支持字体大小调节（小/中/大）、行间距调节、日间/夜间主题切换 | P2 |
+
+**验收标准**：
+- 阅读器页面加载章节内容后，页面滚动到顶部
+- 章节切换不需要整页刷新，通过前端路由参数或状态切换实现
+- 若书籍尚未抓取（无章节内容），在详情页提示"请先抓取内容后再阅读"
+- 进度记录通过后端 API 持久化，跨设备/浏览器保持同步
+- 字体大小和主题设置存储在本地 localStorage，无需登录即可保持偏好
+- 阅读器夜间主题使用深色背景 `#1a2332`，文字使用浅灰 `#cbd5e1`，保持冷色调
+
+### 2.6 标记与置顶模块（P1 — v1.2 新增）
+
+| ID | 功能 | 描述 | 优先级 |
+|----|------|------|--------|
+| MARK-001 | 标记书籍 | 在书架列表中，用户可点击星标图标将书籍标记为"喜欢/收藏" | P0 |
+| MARK-002 | 取消标记 | 再次点击星标取消标记，恢复普通状态 | P0 |
+| MARK-003 | 标记置顶 | 被标记的书籍自动置顶到书架列表最上方，按标记时间倒序排列 | P0 |
+| MARK-004 | 标记筛选 | 书架顶部提供筛选标签："全部 / 已标记"，方便快速查看收藏书籍 | P2 |
+
+**验收标准**：
+- 书架列表排序规则：已标记书籍优先显示（按标记时间倒序），未标记书籍在后（按添加时间倒序）
+- 星标图标使用空心 ☆（未标记）和实心 ★（已标记），颜色使用冷调金色 `#c9a96e`，不刺眼
+- 标记/取消标记操作即时响应，无需二次确认
+- 标记状态与用户账号绑定，更换设备后保持同步
+
+### 2.7 AI 功能模块（P1 — v1.3 新增）
+
+| ID | 功能 | 描述 | 优先级 |
+|----|------|------|--------|
+| AI-001 | AI 语义搜索 | 在书架搜索栏切换到 AI 模式，用自然语言描述想找的书（如"最近看的那本修仙小说"），后端通过 AI 语义匹配返回关联书籍，含匹配原因和置信度 | P0 |
+| AI-002 | AI 摘要生成 | 对已完成抓取的书籍，触发 AI 自动生成小说摘要，包括角色列表和风格标签（如"仙侠、爽文、系统流"），在书籍详情页展示 | P1 |
+
+**验收标准**：
+- AI 语义搜索输入框在搜索中时禁用，显示进度动画和"AI 正在理解…"提示文字
+- AI 语义搜索通常 5-15 秒返回结果，超时或服务不可用时显示友好错误提示
+- 搜索结果含 match_reason（匹配原因）和 score（置信度百分比）
+- AI 摘要生成后展示在书籍详情页，包含角色列表和风格标签
+- AI 摘要生成中显示 loading 状态，失败时显示重试按钮
+- 相关 API：`POST /api/v1/ai/search`、`POST /api/v1/ai/summary/{book_id}`、`GET /api/v1/ai/summary/{book_id}`
 
 ---
 
@@ -141,18 +196,27 @@
 ├── /login              -- 登录页
 ├── /register           -- 注册页
 ├── /shelf              -- 书架首页（默认登录后跳转）
-│   ├── 顶栏：Logo + 搜索框 + 用户头像/退出
-│   ├── 列表区：小说卡片列表
+│   ├── 顶栏：Logo + 导航菜单 + 用户头像/退出
+│   ├── 搜索栏（v1.2 新增）：搜索输入框 + 普通/AI 语义模式切换（v1.3）
+│   ├── 筛选栏：全部 / 已标记 / 抓取完成 / 有 EPUB（v1.2 新增）
+│   ├── 列表区：小说卡片列表（标记书籍置顶显示，v1.2 新增）
 │   └── 添加按钮：手动添加小说
 ├── /search?q=xxx       -- 搜索结果页
 │   ├── 搜索框（可修改关键词重新搜索）
 │   ├── 结果卡片列表（分页）
-│   └── 每张卡片可"加入书架"或"抓取"
+│   ├── 书架内搜索 / 全网搜索标签页切换
+│   └── 每张卡片可"加入书架"或去详情页
 ├── /book/:id           -- 小说详情页
-│   ├── 基本信息：书名、作者、添加时间
-│   ├── 操作区：抓取按钮、下载 .epub 按钮
-│   └── 章节列表（抓取后可预览）
-└── /settings           -- 个人设置（修改密码）
+│   ├── 基本信息：书名、作者、添加时间、星标标记按钮（v1.2 新增）
+│   ├── AI 摘要区（v1.3 新增）：角色列表 + 风格标签
+│   ├── 操作区：抓取按钮、在线阅读按钮（v1.2 新增）、下载 .epub/.txt 按钮
+│   └── 章节列表（抓取后可预览，点击进入阅读器，v1.2 新增）
+├── /reader/:id/:chapterIndex  -- 在线阅读器页面（v1.2 新增）
+│   ├── 顶部：章节标题 + 目录入口
+│   ├── 正文区：章节正文内容
+│   └── 底部导航：上一章 / 下一章 + 进度显示
+├── /settings           -- 个人设置（修改密码）
+└── /crawl-sources      -- 自定义源站管理
 ```
 
 ---
@@ -168,13 +232,13 @@
 | **认证** | JWT（Access + Refresh Token） | 无状态认证，便于后续移动端对接 |
 | **状态管理** | Pinia | Vue 3 官方推荐状态管理库，模块化、类型安全 |
 | **组件库** | Element Plus | Vue 3 生态最成熟的企业级 UI 组件库 |
-| **文件存储** | 本地文件系统 / MinIO（可选） | v1.0 本地存储 `.epub`/`.txt` 文件，后续可切换对象存储 |
+| **文件存储** | 本地文件系统 / MinIO（可选） | 本地存储 `.epub`/`.txt` 文件，后续可切换对象存储 |
 | **爬虫** | httpx + BeautifulSoup4 | 异步 HTTP 请求 + HTML 解析，规则驱动架构，支持通用回退 |
 | **EPUB 生成** | EbookLib（Python） | 成熟的 `.epub` 生成库，支持元数据、目录、封面 |
 
 ---
 
-## 6. 数据库表设计（草案）
+## 6. 数据库表设计
 
 ```python
 # ============================================================
@@ -265,6 +329,9 @@ class Book(Base):
     epub_path: Mapped[str | None] = mapped_column(
         String(1000), nullable=True
     )
+    txt_path: Mapped[str | None] = mapped_column(
+        String(1000), nullable=True
+    )
     status: Mapped[str] = mapped_column(
         String(10), nullable=False,
         default="idle", server_default="idle",
@@ -272,6 +339,18 @@ class Book(Base):
     )
     chapter_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
+    )
+    is_marked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0",
+    )
+    marked_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
+    ai_summary: Mapped[str | None] = mapped_column(       # v1.3 新增
+        Text, nullable=True, default=None
+    )
+    ai_summary_at: Mapped[datetime | None] = mapped_column( # v1.3 新增
+        DateTime, nullable=True, default=None
     )
     added_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -293,6 +372,100 @@ class Book(Base):
     # 关联: 所属用户
     user: Mapped["User"] = relationship(
         "User", back_populates="books", lazy="selectin",
+    )
+    # 关联: 本书的所有章节
+    chapters: Mapped[list["Chapter"]] = relationship(
+        "Chapter",
+        back_populates="book",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+    )
+    # 关联: 阅读进度
+    reading_progress: Mapped["ReadingProgress | None"] = relationship(
+        "ReadingProgress",
+        back_populates="book",
+        uselist=False,
+        lazy="selectin",
+    )
+
+
+# ============================================================
+# app/models/chapter.py  -- 章节表
+# ============================================================
+class Chapter(Base):
+    __tablename__ = "chapters"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    book_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("books.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    index: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    title: Mapped[str] = mapped_column(
+        String(500), nullable=False
+    )
+    content: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )
+    word_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=_now_utc,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    # 关联: 所属书籍
+    book: Mapped["Book"] = relationship(
+        "Book", back_populates="chapters", lazy="selectin",
+    )
+
+
+# ============================================================
+# app/models/reading_progress.py  -- 阅读进度表（v1.2 新增）
+# ============================================================
+class ReadingProgress(Base):
+    __tablename__ = "reading_progress"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    book_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("books.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,  # 每本书只记录一条进度
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    last_chapter_index: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=_now_utc,
+        server_default=func.now(),
+        onupdate=_now_utc,
+        nullable=False,
+    )
+
+    # 关联: 所属书籍
+    book: Mapped["Book"] = relationship(
+        "Book", back_populates="reading_progress", lazy="selectin",
     )
 
 
@@ -336,7 +509,7 @@ class RefreshToken(Base):
 
 ---
 
-## 7. API 接口设计（草案）
+## 7. API 接口设计
 
 ### 7.1 认证路由 `app/api/v1/auth.py`
 
@@ -430,10 +603,21 @@ from app.database import get_db
 from app.middleware.error_handler import AppException
 from app.models.user import User
 from app.schemas.book import (
-    BookCreateRequest, BookResponse, CrawlStatusResponse,
+    BookCreateRequest,
+    BookResponse,
+    ChapterDetailResponse,
+    ChapterResponse,
+    CrawlStatusResponse,
+    ReadingProgressResponse,
+    ReadingProgressUpdateRequest,
 )
-from app.schemas.common import ApiResponse, PaginationMeta
-from app.services.book_service import BookService, book_to_response
+from app.services.book_service import (
+    BookService,
+    book_to_response,
+    chapter_to_response,
+    chapter_to_detail_response,
+    progress_to_response,
+)
 from app.utils.deps import get_current_user
 
 router = APIRouter(tags=["书架 / 搜索 / 抓取"])
@@ -446,11 +630,12 @@ router = APIRouter(tags=["书架 / 搜索 / 抓取"])
 )
 async def list_books(
     page: int = Query(default=1, ge=1, description="页码"),
-    page_size: int = Query(default=20, ge=1, le=100, description="每页数量"),
+    page_size: int = Query(default=20, ge=1, le=500, description="每页数量（v1.2 客户端缓存时传 200）"),
+    marked: bool | None = Query(default=None, description="筛选：仅已标记/全部（v1.2 新增）"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """GET /api/v1/books -- 获取书架列表，按添加时间倒序"""
+    """GET /api/v1/books -- 获取书架列表，已标记书籍置顶，支持按标记筛选"""
     books, total = await BookService.get_books(
         db, current_user, page, page_size
     )
@@ -508,7 +693,7 @@ async def delete_book(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """DELETE /api/v1/books/{book_id} -- 软删除小说"""
+    """DELETE /api/v1/books/{book_id} -- 软删除小说，同时清理本地 .epub/.txt 文件"""
     await BookService.delete_book(db, current_user, book_id)
     return ApiResponse.ok(data=None)
 
@@ -521,11 +706,11 @@ async def delete_book(
 async def search_books(
     q: str = Query(..., min_length=1, description="搜索关键词"),
     page: int = Query(default=1, ge=1, description="页码"),
-    page_size: int = Query(default=20, ge=1, le=100, description="每页数量"),
+    page_size: int = Query(default=20, ge=1, le=500, description="每页数量"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """GET /api/v1/search?q=&page= -- 在书架中按书名模糊搜索"""
+    """GET /api/v1/search?q=&page= -- 在书架中按书名+作者模糊搜索（v1.2 已扩展为双字段）"""
     books, total = await BookService.search_books(
         db, current_user, q, page, page_size
     )
@@ -575,23 +760,196 @@ async def get_crawl_status(
 
 @router.get(
     "/books/{book_id}/download",
-    summary="下载 .epub 文件",
+    summary="下载 .epub/.txt 电子书文件",
 )
 async def download_book(
+    book_id: str,
+    format: str = Query(default="epub", pattern="^(epub|txt)$"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """GET /api/v1/books/{book_id}/download?format=epub|txt -- 下载电子书文件（v1.2 已实现）"""
+    book = await BookService.get_book_detail(
+        db, current_user, book_id
+    )
+    if format == "txt":
+        if not book.txt_path:
+            raise AppException(
+                status_code=404,
+                detail="该书籍尚未生成 TXT 文件，请先抓取",
+            )
+    else:
+        if not book.epub_path:
+            raise AppException(
+                status_code=404,
+                detail="该书籍尚未生成 EPUB 文件，请先抓取",
+            )
+    # 实际返回 FileResponse（见 books.py 实际实现）
+
+
+# ── v1.2 新增：标记与置顶 ──────────────────────────────────
+
+@router.put(
+    "/books/{book_id}/mark",
+    response_model=ApiResponse[BookResponse],
+    summary="标记/取消标记书籍",
+)
+async def toggle_mark_book(
     book_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """GET /api/v1/books/{book_id}/download -- 下载 .epub 文件（占位）"""
-    book = await BookService.get_book_detail(
-        db, current_user, book_id
+    """PUT /api/v1/books/{book_id}/mark -- 切换标记状态，被标记的书籍自动置顶"""
+    book = await BookService.toggle_mark(db, current_user, book_id)
+    return ApiResponse.ok(data=book_to_response(book))
+
+
+# ── v1.2 新增：在线阅读器 ──────────────────────────────────
+
+@router.get(
+    "/books/{book_id}/chapters",
+    response_model=ApiResponse[list[ChapterResponse]],
+    summary="获取章节列表",
+)
+async def list_chapters(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """GET /api/v1/books/{book_id}/chapters -- 获取书籍的所有章节（按 index 升序）"""
+    chapters = await BookService.get_chapters(db, current_user, book_id)
+    return ApiResponse.ok(data=[chapter_to_response(c) for c in chapters])
+
+
+@router.get(
+    "/books/{book_id}/chapters/{chapter_index}",
+    response_model=ApiResponse[ChapterDetailResponse],
+    summary="获取章节内容",
+)
+async def get_chapter_content(
+    book_id: str,
+    chapter_index: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """GET /api/v1/books/{book_id}/chapters/{chapter_index} -- 获取单章正文内容"""
+    chapter = await BookService.get_chapter_content(
+        db, current_user, book_id, chapter_index
     )
-    if not book.epub_path:
-        raise AppException(
-            status_code=404,
-            detail="该书籍尚未生成 .epub 文件，请先抓取",
-        )
-    raise AppException(status_code=501, detail="下载功能开发中")
+    return ApiResponse.ok(data=chapter_to_detail_response(chapter))
+
+
+@router.get(
+    "/books/{book_id}/progress",
+    response_model=ApiResponse[ReadingProgressResponse],
+    summary="获取阅读进度",
+)
+async def get_reading_progress(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """GET /api/v1/books/{book_id}/progress -- 获取用户在该书的阅读进度"""
+    progress = await BookService.get_reading_progress(db, current_user, book_id)
+    return ApiResponse.ok(data=progress_to_response(progress))
+
+
+@router.put(
+    "/books/{book_id}/progress",
+    response_model=ApiResponse[ReadingProgressResponse],
+    summary="更新阅读进度",
+)
+async def update_reading_progress(
+    book_id: str,
+    data: ReadingProgressUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """PUT /api/v1/books/{book_id}/progress -- 更新用户在该书的阅读进度"""
+    progress = await BookService.update_reading_progress(
+        db, current_user, book_id, data.chapter_index
+    )
+    return ApiResponse.ok(data=progress_to_response(progress))
+```
+
+### 7.3 AI 功能路由 `app/api/v1/ai.py`（v1.3 新增）
+
+```python
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_db
+from app.models.user import User
+from app.schemas.common import ApiResponse
+from app.services.ai_service import AiService
+from app.utils.deps import get_current_user
+
+router = APIRouter(prefix="/ai", tags=["AI 功能"])
+
+
+class AiSearchRequest(BaseModel):
+    query: str
+
+
+class AiSearchResultItem(BaseModel):
+    book_id: str
+    title: str
+    author: str
+    match_reason: str
+    score: float
+
+
+class AiSummaryResponse(BaseModel):
+    status: str            # "processing" | "done" | "failed"
+    ai_summary: str | None
+    ai_summary_at: str | None
+    error: str | None
+
+
+@router.post(
+    "/search",
+    response_model=ApiResponse[list[AiSearchResultItem]],
+    summary="AI 语义搜索",
+)
+async def ai_search_books(
+    data: AiSearchRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """POST /api/v1/ai/search -- 用自然语言在书架中语义搜索小说"""
+    results = await AiService.semantic_search(db, current_user, data.query)
+    return ApiResponse.ok(data=results)
+
+
+@router.post(
+    "/summary/{book_id}",
+    response_model=ApiResponse[AiSummaryResponse],
+    summary="触发 AI 摘要生成",
+)
+async def generate_ai_summary(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """POST /api/v1/ai/summary/{book_id} -- 触发 AI 自动生成小说摘要（角色列表+风格标签）"""
+    result = await AiService.generate_summary(db, current_user, book_id)
+    return ApiResponse.ok(data=result)
+
+
+@router.get(
+    "/summary/{book_id}",
+    response_model=ApiResponse[AiSummaryResponse],
+    summary="获取 AI 摘要",
+)
+async def get_ai_summary(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """GET /api/v1/ai/summary/{book_id} -- 获取已生成的 AI 摘要"""
+    result = await AiService.get_summary(db, current_user, book_id)
+    return ApiResponse.ok(data=result)
 ```
 
 所有接口返回统一格式：
@@ -639,9 +997,12 @@ class ApiResponse(BaseModel, Generic[T]):
 
 | 版本 | 内容 | 时间 |
 |------|------|------|
-| **v1.0** | Web 端：注册/登录、书架增删查、在线搜索、抓取 + `.epub` 生成与下载 | -- |
-| **v1.1** | 书架搜索、批量删除、抓取进度优化、支持多源站搜索 | -- |
-| **v2.0** | 移动端适配（UniApp / 独立移动框架），离线阅读器内嵌 | -- |
+| **v1.0** | Web 端：注册/登录、书架增删查、在线搜索、抓取 + `.epub` 生成与下载 | ✅ 已完成 |
+| **v1.1** | 书架搜索、抓取进度优化、多源站搜索、通用抓取、自定义源站、TXT 输出 | ✅ 已完成 |
+| **v1.2** | App 内在线阅读器（章节列表、正文阅读、章节导航、进度记录、阅读设置）、标记与置顶（星标标记、取消标记、标记置顶排序）、书架快速检索（书架内嵌搜索栏 + Ctrl+K 命令面板）、删除功能增强（本地文件清理） | ✅ 已完成 |
+| **v1.3** | AI 语义搜索（书架内自然语言搜索，Dify 工作流 + Embedding 向量匹配）、AI 摘要生成（自动生成小说摘要、角色列表、风格标签）、书架搜索栏 AI 模式切换 | ✅ 已完成 |
+| **v2.0** | 移动端适配（UniApp / 独立移动框架），离线阅读器内嵌 | 🔮 规划中 |
+| **v2.1+** | 拼音搜索（pinyin-pro）、搜索历史与自动补全、全文搜索升级（MySQL FULLTEXT / Meilisearch）、语音搜索（Web Speech API） | 🔮 规划中 |
 
 ---
 
@@ -674,4 +1035,6 @@ class ApiResponse(BaseModel, Generic[T]):
 
 > **ACK**：您好！当前任务已完成！
 >
-> **v1.1 更新**：新增通用抓取支持、自定义源站规则管理、TXT 格式输出、外部源站搜索接口。
+> **v1.2 更新**：新增 App 内在线阅读器、章节列表与内容 API、阅读进度记录与恢复、星标标记与置顶功能、书架标记筛选、书架内嵌搜索栏（书名+作者双字段）+ Ctrl+K 命令面板。
+>
+> **v1.3 更新**：新增 AI 语义搜索（书架内自然语言搜索，Dify 工作流驱动）、AI 摘要生成（角色列表 + 风格标签）、书架搜索栏 AI 模式切换。
