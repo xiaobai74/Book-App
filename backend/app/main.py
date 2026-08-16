@@ -10,6 +10,7 @@ API 文档:
     - ReDoc:      http://localhost:8000/redoc
 """
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -18,6 +19,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # 确保所有 ORM 模型在应用启动前被导入
 from app.models import User, Book, RefreshToken, Chapter, CrawlSource, ReadingProgress  # noqa: F401
+
+logger = logging.getLogger(__name__)
+
+# 应用版本（与 PRD v1.3 功能对齐）
+APP_VERSION = "1.3.0"
 
 from app.api.v1.auth import router as auth_router
 from app.api.v1.books import router as books_router
@@ -36,12 +42,18 @@ from app.middleware.error_handler import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    # 安全提示：默认密钥仅用于本地开发，生产部署必须在 .env 中配置
+    if settings.jwt_secret == "dev-secret-key-change-in-production-please":
+        logger.warning(
+            "检测到 JWT_SECRET 仍为默认值（开发密钥），生产部署请务必在 .env 中配置自定义密钥，"
+            "否则任何人都能签发有效的登录 Token"
+        )
     yield
 
 
 app = FastAPI(
     title="小说管理App API",
-    version="1.0.0",
+    version=APP_VERSION,
     description="日常小说管理工具 — 搜索、抓取、生成 .epub 并集中管理个人书架",
     lifespan=lifespan,
 )
@@ -71,4 +83,4 @@ app.include_router(ai_router, prefix="/api/v1")
 @app.get("/health", tags=["系统"], summary="健康检查")
 async def health_check():
     """返回服务运行状态"""
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok", "version": APP_VERSION}

@@ -87,6 +87,13 @@ http.interceptors.response.use(
       }
     }
 
+    // 已用新 token 重试过仍返回 401：token 确实失效，清理并跳转登录
+    if (error.response?.status === 401 && originalRequest._retry) {
+      localStorage.removeItem('access_token')
+      localStorage.removeItem('refresh_token')
+      window.location.href = '/login'
+    }
+
     return Promise.reject(error)
   }
 )

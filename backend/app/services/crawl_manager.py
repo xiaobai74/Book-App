@@ -9,6 +9,8 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
+from sqlalchemy import delete, select
+
 from app.database import async_session
 from app.models.book import Book
 from app.models.chapter import Chapter
@@ -34,6 +36,17 @@ def get_crawl_progress(book_id: str) -> dict | None:
     return _crawl_progress.get(book_id)
 
 
+def _cleanup_task(book_id: str, task: asyncio.Task) -> None:
+    """任务结束（成功/失败/取消）后清理内存状态，防止进度条目无限增长。"""
+    if book_id in _running_tasks:
+        del _running_tasks[book_id]
+    if task.cancelled():
+        logger.warning(f"抓取任务被取消: book_id={book_id}")
+    elif task.exception() is not None:
+        logger.error(f"抓取任务异常结束: book_id={book_id} — {task.exception()}")
+    _crawl_progress.pop(book_id, None)
+
+
 async def start_crawl(book_id: str, max_chapters: int = _DEFAULT_MAX_CHAPTERS) -> None:
     """启动后台抓取任务。"""
     # 清理已完成的旧任务
@@ -46,6 +59,7 @@ async def start_crawl(book_id: str, max_chapters: int = _DEFAULT_MAX_CHAPTERS) -
 
     loop = asyncio.get_running_loop()
     task = loop.create_task(_crawl_pipeline(book_id, max_chapters))
+    task.add_done_callback(lambda t: _cleanup_task(book_id, t))
     _running_tasks[book_id] = task
     logger.info(f"后台抓取任务已创建: book_id={book_id}")
 
@@ -56,18 +70,19 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
         "current": 0, "total": 0, "status": "crawling", "error": None,
     }
 
-    # ══ 1. 从 DB 读取书籍信息 ══
+    # ══ 1. 从 DB 读取书籍信息（排除已软删除的书籍） ══
     async with async_session() as db:
-        from sqlalchemy import select
-        result = await db.execute(select(Book).where(Book.id == book_id))
+        result = await db.execute(
+            select(Book).where(Book.id == book_id, Book.deleted_at.is_(None))
+        )
         book = result.scalar_one_or_none()
 
         if not book:
             _crawl_progress[book_id] = {
                 "current": 0, "total": 0, "status": "failed",
-                "error": "书籍不存在",
+                "error": "书籍不存在或已被删除",
             }
-            logger.error(f"书籍 {book_id} 不存在")
+            logger.error(f"书籍 {book_id} 不存在或已被删除")
             return
 
         if not book.source_url:
@@ -82,6 +97,11 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
         source_url = book.source_url
         await db.commit()
 
+    # 读取一次书籍标题/作者用于日志与文件生成（session 关闭后 ORM 对象过期，
+    # 不能再访问 book.title，否则抛 DetachedInstanceError）
+    book_title = book.title
+    book_author = book.author
+
     # ── 进度回调辅助 ──────────────────────────────
     def update_progress(current: int, total: int):
         _crawl_progress[book_id] = {
@@ -89,7 +109,7 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
         }
 
     # ══ 2. 爬取所有章节 ══
-    logger.info(f"开始抓取《{book.title}》: {source_url}")
+    logger.info(f"开始抓取《{book_title}》: {source_url}")
     try:
         chapters = await crawler.crawl_book(
             source_url=source_url,
@@ -103,8 +123,9 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
             "current": 0, "total": 0, "status": "failed", "error": error_msg,
         }
         async with async_session() as db:
-            from sqlalchemy import select
-            result = await db.execute(select(Book).where(Book.id == book_id))
+            result = await db.execute(
+                select(Book).where(Book.id == book_id, Book.deleted_at.is_(None))
+            )
             book = result.scalar_one_or_none()
             if book:
                 book.status = "failed"
@@ -117,8 +138,9 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
             "error": "未获取到任何章节内容",
         }
         async with async_session() as db:
-            from sqlalchemy import select
-            result = await db.execute(select(Book).where(Book.id == book_id))
+            result = await db.execute(
+                select(Book).where(Book.id == book_id, Book.deleted_at.is_(None))
+            )
             book = result.scalar_one_or_none()
             if book:
                 book.status = "failed"
@@ -130,10 +152,13 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
     book_title = ""
     book_author = ""
     async with async_session() as db:
-        from sqlalchemy import delete, select
-        result = await db.execute(select(Book).where(Book.id == book_id))
+        # 排除已软删除的书籍：避免删除后章节仍被写回、状态被覆盖为 done
+        result = await db.execute(
+            select(Book).where(Book.id == book_id, Book.deleted_at.is_(None))
+        )
         book = result.scalar_one_or_none()
         if not book:
+            logger.warning(f"书籍 {book_id} 已被删除，跳过章节写入与文件生成")
             return
 
         book_title = book.title
@@ -173,7 +198,7 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
 
     # 生成 EPUB
     try:
-        epub_path = await asyncio.get_event_loop().run_in_executor(
+        epub_path = await asyncio.get_running_loop().run_in_executor(
             _thread_pool,
             lambda: epub_service.generate(
                 book_id=book_id,
@@ -189,7 +214,7 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
 
     # 生成 TXT
     try:
-        txt_path = await asyncio.get_event_loop().run_in_executor(
+        txt_path = await asyncio.get_running_loop().run_in_executor(
             _thread_pool,
             lambda: txt_service.generate(
                 book_id=book_id,
@@ -206,11 +231,12 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
             current_error += "; "
         _crawl_progress[book_id]["error"] = f"{current_error}TXT 生成失败: {e}"
 
-    # 统一更新文件路径 — 使用单个 DB Session
+    # 统一更新文件路径 — 使用单个 DB Session（排除已删除的书籍）
     if epub_path or txt_path:
         async with async_session() as db:
-            from sqlalchemy import select
-            result = await db.execute(select(Book).where(Book.id == book_id))
+            result = await db.execute(
+                select(Book).where(Book.id == book_id, Book.deleted_at.is_(None))
+            )
             book = result.scalar_one_or_none()
             if book:
                 if epub_path:
@@ -221,6 +247,4 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
             else:
                 logger.warning(f"书籍 {book_id} 已被删除，文件路径未写入数据库")
 
-    # 清理
-    if book_id in _running_tasks:
-        del _running_tasks[book_id]
+    # 清理内存状态由 _cleanup_task 的 done callback 统一处理

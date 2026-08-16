@@ -5,7 +5,18 @@
 # 类型：Workflow
 #
 # 功能：根据书籍信息和章节样本，由 LLM 生成情节摘要、角色列表、风格标签。
-# 通过 Webhook 触发，生成完成后回调后端 API 存储结果。
+# 触发方式：由后端 API 直接调用 /workflows/run（blocking 模式）获取结果，
+#           结果由后端 ai_service 自行写入数据库（无 Webhook 回调端点）。
+#
+# ⚠️ 已知导入问题（Dify 1.16.x 实测）：
+#   1. Code 节点的 variables（llm_output 绑定）导入后可能丢失为空数组，
+#      运行时报 "TypeError: main() missing 1 required positional argument:
+#      'llm_output'"。修复：在 Dify 画布中手动为代码节点添加输入变量
+#      llm_output，绑定 LLM 节点的 text 输出。
+#   2. Code 节点 outputs 中 generated 的类型可能被导入为 string，
+#      运行时报 "Output generated must be a string, got bool instead"。
+#      修复：在 Dify 画布中将 generated 输出类型改为 boolean。
+#   （本文件中的 DSL 定义本身是正确的，问题出在 Dify 的 DSL 导入器。）
 # ═══════════════════════════════════════════════════════════════
 
 app:
@@ -79,7 +90,7 @@ workflow:
               required: true
               type: "text-input"
               variable: "book_author"
-            - label: "章节样本（前3章+后2章，JSON格式）"
+            - label: "章节样本（前3章+后2章，纯文本拼接）"
               max_length: 20000
               options: []
               required: true

@@ -75,8 +75,8 @@
 | ID | 功能 | 描述 | 优先级 |
 |----|------|------|--------|
 | SEARCH-001 | 小说搜索 | 输入关键词（书名/作者），调用搜索引擎或内容站点检索匹配的小说 | P0 |
-| SEARCH-002 | 搜索结果展示 | 以卡片列表展示搜索结果，每项包含书名、作者、简介（截断50字）、最新章节 | P0 |
-| SEARCH-003 | 搜索结果分页 | 搜索结果分页展示，每页 20 条 | P1 |
+| SEARCH-002 | 搜索结果展示 | 以卡片列表展示搜索结果，每项包含书名、作者、最新章节 | P0 |
+| SEARCH-003 | 搜索结果上限 | 每个源站最多返回 30 条结果（`search_limit` 参数，默认 30、上限 100），合并去重后一次性展示；书架内搜索（`/api/v1/search`）支持分页 | P1 |
 
 **验收标准**：
 - 输入关键词后点击搜索或按 Enter 触发搜索
@@ -97,11 +97,11 @@
 | EPUB-007 | 自定义源站 | 用户可添加自定义 CSS 选择器规则，提高特定网站抓取精确度 | P1 |
 
 **验收标准**：
-- 抓取失败时对单章节重试 3 次，全部失败则标记"抓取失败"并提示用户
+- 抓取失败时对单章节重试 3 次，全部失败时该章写入占位文本 `[本章抓取失败: …]`，书籍仍标记为抓取完成（其余章节可用）；仅章节列表整体获取失败时才将书籍标记为"抓取失败"并提示用户
 - `.epub` 文件必须符合 EPUB 3.2 规范，可在主流阅读器（Apple Books、Calibre、Kindle）正常打开
 - `.txt` 文件 UTF-8 编码，可在任意文本编辑器打开
 - 章节顺序与源站一致，无缺章漏章
-- 文件名格式：`《书名》-作者.epub` / `《书名》-作者.txt`
+- 文件名格式：`(book_id)书名-作者.epub` / `(book_id)书名-作者.txt`（book_id 为书籍 UUID 前缀，防止同名书覆盖）
 - 通用抓取：任意小说网站 URL 应当至少能成功解析章节列表（成功率取决于目标网站 HTML 结构的规范性）
 
 ### 2.5 在线阅读器模块（P0 — v1.2 新增）
@@ -161,8 +161,8 @@
 
 | 约束 | 说明 |
 |------|------|
-| **色彩基调** | 冷色调为主。主色建议使用深蓝 `#1a2332` 或石板灰 `#2c3e50`，辅色以青灰、冰蓝点缀。不出现暖色大面积元素 |
-| **动画** | 禁止所有过渡动画、CSS transition、animation、hover 动效。交互反馈使用即时状态切换（如按钮 disabled 态、loading 文字） |
+| **色彩基调** | 冷色调为主。主色采用冰蓝 `#4a8bb5`（按钮/链接，hover 加深 `#3a7096`），辅色以青灰、冰蓝点缀（`#5ba3cc`）。不出现暖色大面积元素（星标金色 `#c9a96e` 为唯一暖色点缀） |
+| **动画** | 界面以极简冷色调为主，不引入装饰性动画。允许的动效仅限：加载指示动画（AI 搜索三点跳动、加载进度条）；其余 transition 全局禁用，悬停反馈（如星标按钮 hover 微缩放、卡片 hover 高亮）以即时状态切换实现 |
 | **界面风格** | 极简整洁。卡片式布局，充足留白，信息层次通过字号/字重/间距区分，不用装饰性元素 |
 | **字体** | 系统默认无衬线字体（system-ui, -apple-system, sans-serif），字号 14px 正文 / 12px 辅助文字 |
 
@@ -172,7 +172,7 @@
 |------|------|
 | **Web 端优先** | v1.0 目标平台为桌面浏览器（>= 1280px 宽）。同时采用响应式布局，确保 768px（平板）和 375px（手机）下可正常使用 |
 | **移动端预留** | CSS 使用 rem/em 相对单位，布局使用 Flexbox + Grid，为后续 React Native / Flutter 迁移降低适配成本 |
-| **断点策略** | `< 768px` 单列布局；`768-1024px` 双列布局；`> 1024px` 多列布局（搜索页最多 4 列卡片） |
+| **断点策略** | `< 920px` 单列布局；`>= 920px` 多列布局（搜索页 3 列卡片；书架/其他页面按容器宽度自适应）。响应式适配覆盖平板（768px）与手机（375px） |
 
 ### 3.3 性能
 
@@ -184,8 +184,8 @@
 
 - 所有 API 必须通过 HTTPS 传输
 - API 请求携带 JWT Authorization Header
-- 用户输入统一在后端做 XSS 清洗
-- 爬虫模块设置合理频率限制（单源站请求间隔 >= 2s），避免被封 IP
+- XSS 防护：后端统一 JSON 序列化输出（不注入 HTML）；前端在渲染用户内容处转义（`escapeHtml`），搜索高亮仅对转义后的文本加 `<mark>` 标签
+- 爬虫模块设置频率限制与随机延迟：章节抓取随机间隔 0.2-0.4s、默认并发 5、失败重试指数退避 2-4s（v1.1 调整为平衡抓取速度与封禁风险；连接预检、目录翻页均带随机间隔）
 
 ---
 
@@ -206,7 +206,7 @@
 │   ├── 结果卡片列表（分页）
 │   ├── 书架内搜索 / 全网搜索标签页切换
 │   └── 每张卡片可"加入书架"或去详情页
-├── /book/:id           -- 小说详情页
+├── /detail/:id          -- 小说详情页
 │   ├── 基本信息：书名、作者、添加时间、星标标记按钮（v1.2 新增）
 │   ├── AI 摘要区（v1.3 新增）：角色列表 + 风格标签
 │   ├── 操作区：抓取按钮、在线阅读按钮（v1.2 新增）、下载 .epub/.txt 按钮
@@ -506,6 +506,23 @@ class RefreshToken(Base):
         "User", back_populates="refresh_tokens", lazy="selectin",
     )
 ```
+
+### 自定义抓取源站表 `crawl_sources`
+
+> 对应实现 `backend/app/models/crawl_source.py`（v1.1 自定义源站功能新增）。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | `INT` 自增主键 | 源站 ID |
+| `user_id` | `VARCHAR(36)` FK→users.id | 所属用户 |
+| `name` | `VARCHAR(200)` | 源站名称 |
+| `url` | `VARCHAR(2048)` | 源站域名/首页 URL |
+| `rule_json` | `TEXT` | JSON 格式的抓取规则（toc/chapter 选择器） |
+| `is_public` | `TINYINT(1)` 默认 0 | 是否公开给所有用户 |
+| `created_at` | `DATETIME` | 创建时间 |
+| `updated_at` | `DATETIME` | 更新时间 |
+
+`User` 模型含 `crawl_sources` 关联（`lazy="selectin"`）。
 
 ---
 
@@ -872,6 +889,22 @@ async def update_reading_progress(
     return ApiResponse.ok(data=progress_to_response(progress))
 ```
 
+### 7.2a 搜索与抓取扩展端点（v1.1 新增，位于 `books.py`）
+
+以下端点已在代码中实现，属于书架路由的扩展（详见 `api/API文档.md` 各接口章节）：
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/v1/search/external` | GET | 外部源站全网搜索（并发搜索所有已配置源站，合并去重） |
+| `/api/v1/sources` | GET | 获取可用源站列表 |
+| `/api/v1/crawl/check-url` | POST | 检查源站 URL 连通性（含 SSRF 防护：拒绝内网/环回地址） |
+| `/api/v1/crawl-sources` | GET / POST | 列出自定义源站 / 创建自定义源站 |
+| `/api/v1/crawl-sources/{source_id}` | GET / PUT / DELETE | 获取 / 更新 / 删除单个自定义源站 |
+| `/api/v1/crawl-sources/test` | POST | 测试自定义源站抓取规则 |
+| `/health` | GET | 健康检查（返回 `{"status": "ok", "version": "1.3.0"}`） |
+
+> 注：自定义源站 CRUD 对应的数据表为 `crawl_sources`（见第 6 章末）；URL 连通性预检在触发抓取前由前端调用，用于提前发现 URL 不可达问题。
+
 ### 7.3 AI 功能路由 `app/api/v1/ai.py`（v1.3 新增）
 
 ```python
@@ -897,11 +930,11 @@ class AiSearchResultItem(BaseModel):
     title: str
     author: str
     match_reason: str
-    score: float
+    score: int
 
 
-class AiSummaryResponse(BaseModel):
-    status: str            # "processing" | "done" | "failed"
+class SummaryStatusResponse(BaseModel):
+    status: str            # "queued" | "generating" | "done" | "failed" | "none"
     ai_summary: str | None
     ai_summary_at: str | None
     error: str | None
@@ -912,44 +945,42 @@ class AiSummaryResponse(BaseModel):
     response_model=ApiResponse[list[AiSearchResultItem]],
     summary="AI 语义搜索",
 )
-async def ai_search_books(
-    data: AiSearchRequest,
+async def ai_search(
+    body: AiSearchRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     """POST /api/v1/ai/search -- 用自然语言在书架中语义搜索小说"""
-    results = await AiService.semantic_search(db, current_user, data.query)
-    return ApiResponse.ok(data=results)
+    results = await ai_service.semantic_search(current_user, body.query)
+    return ApiResponse.ok(data=[AiSearchResultItem(**r) for r in results])
 
 
 @router.post(
     "/summary/{book_id}",
-    response_model=ApiResponse[AiSummaryResponse],
+    response_model=ApiResponse[SummaryStatusResponse],
     summary="触发 AI 摘要生成",
 )
-async def generate_ai_summary(
+async def generate_summary(
     book_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """POST /api/v1/ai/summary/{book_id} -- 触发 AI 自动生成小说摘要（角色列表+风格标签）"""
-    result = await AiService.generate_summary(db, current_user, book_id)
-    return ApiResponse.ok(data=result)
+    result = await ai_service.start_summary_generation(book_id)
+    return ApiResponse.ok(data=SummaryStatusResponse(status=result["status"], error=result.get("error")))
 
 
 @router.get(
     "/summary/{book_id}",
-    response_model=ApiResponse[AiSummaryResponse],
+    response_model=ApiResponse[SummaryStatusResponse],
     summary="获取 AI 摘要",
 )
-async def get_ai_summary(
+async def get_summary(
     book_id: str,
-    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """GET /api/v1/ai/summary/{book_id} -- 获取已生成的 AI 摘要"""
-    result = await AiService.get_summary(db, current_user, book_id)
-    return ApiResponse.ok(data=result)
+    db_summary = await ai_service.get_summary_from_db(book_id, user_id=current_user.id)
+    return ApiResponse.ok(data=SummaryStatusResponse(**db_summary))
 ```
 
 所有接口返回统一格式：
@@ -1000,7 +1031,7 @@ class ApiResponse(BaseModel, Generic[T]):
 | **v1.0** | Web 端：注册/登录、书架增删查、在线搜索、抓取 + `.epub` 生成与下载 | ✅ 已完成 |
 | **v1.1** | 书架搜索、抓取进度优化、多源站搜索、通用抓取、自定义源站、TXT 输出 | ✅ 已完成 |
 | **v1.2** | App 内在线阅读器（章节列表、正文阅读、章节导航、进度记录、阅读设置）、标记与置顶（星标标记、取消标记、标记置顶排序）、书架快速检索（书架内嵌搜索栏 + Ctrl+K 命令面板）、删除功能增强（本地文件清理） | ✅ 已完成 |
-| **v1.3** | AI 语义搜索（书架内自然语言搜索，Dify 工作流 + Embedding 向量匹配）、AI 摘要生成（自动生成小说摘要、角色列表、风格标签）、书架搜索栏 AI 模式切换 | ✅ 已完成 |
+| **v1.3** | AI 语义搜索（书架内自然语言搜索，Dify 工作流 + LLM 语义匹配）、AI 摘要生成（自动生成小说摘要、角色列表、风格标签）、书架搜索栏 AI 模式切换 | ✅ 已完成 |
 | **v2.0** | 移动端适配（UniApp / 独立移动框架），离线阅读器内嵌 | 🔮 规划中 |
 | **v2.1+** | 拼音搜索（pinyin-pro）、搜索历史与自动补全、全文搜索升级（MySQL FULLTEXT / Meilisearch）、语音搜索（Web Speech API） | 🔮 规划中 |
 
@@ -1025,11 +1056,12 @@ class ApiResponse(BaseModel, Generic[T]):
 | 卡片背景 | `#ffffff` | 纯白卡片 |
 | 主文字 | `#1e293b` | 深石板灰 |
 | 辅助文字 | `#64748b` | 中灰蓝 |
-| 主色调（按钮/链接） | `#334155` | 深蓝灰 |
-| 强调（hover/active） | `#1e293b` | 更深的石板灰 |
+| 主色调（按钮/链接） | `#4a8bb5` | 冷调冰蓝（Element Plus primary 映射 `--accent`） |
+| 强调（hover/active） | `#3a7096` | 冰蓝加深（`--accent-hover`） |
 | 边框/分割线 | `#e2e8f0` | 浅灰蓝 |
 | 成功状态 | `#475569` | 中性灰蓝（不用绿色） |
 | 错误状态 | `#94a3b8` | 浅灰蓝（不用红色，保持冷调统一） |
+| 次强调文字 | `#334155` | 深蓝灰（`--fg-soft`，辅助文字用） |
 
 ---
 

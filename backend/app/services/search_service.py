@@ -10,14 +10,14 @@ import logging
 import random
 import re
 import ssl
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urljoin as _urljoin
+from urllib.parse import quote
 
 import httpx
 from bs4 import BeautifulSoup
 
-from rules.rule_engine import RuleEngine, get_rule_engine
+from rules.rule_engine import get_rule_engine
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +205,6 @@ class SearchService:
                         if data:
                             # data 模板中的 %s 也需编码
                             encoded_data = data.replace("%s", quote(keyword))
-                            from urllib.parse import urlencode
                             url = f"{url}?{encoded_data}"
                         else:
                             url = f"{url}?q={quote(keyword)}"

@@ -9,7 +9,7 @@
       <div class="container">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px">
           <h2 style="font-size:clamp(22px,3vw,28px);font-weight:600">自定义抓取源站</h2>
-          <el-button type="primary" @click="showAddDialog = true">
+          <el-button type="primary" @click="openAdd()">
             <el-icon style="margin-right:6px"><Plus /></el-icon>
             添加源站
           </el-button>
@@ -185,7 +185,6 @@ import TopNav from '@/components/TopNav.vue'
 
 const loading = ref(false)
 const sources = ref<CrawlSource[]>([])
-const showAddDialog = ref(false)
 const showEditDialog = ref(false)
 const isEditing = ref(false)
 const editingId = ref<number | null>(null)

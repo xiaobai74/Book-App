@@ -4,6 +4,7 @@ FastAPI 依赖注入
 提供数据库会话、当前用户身份认证等可复用依赖。
 """
 
+import jwt
 from fastapi import Depends, Header
 from fastapi.exceptions import HTTPException
 from sqlalchemy import select
@@ -15,7 +16,7 @@ from app.utils.security import decode_token
 
 
 async def get_current_user(
-    authorization: str = Header(..., description="Bearer <token>"),
+    authorization: str | None = Header(default=None, description="Bearer <token>"),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """
@@ -30,18 +31,18 @@ async def get_current_user(
         401: Token 缺失、格式错误、已过期或无效
         401: 用户不存在或已被软删除
     """
-    # 校验 Bearer 格式
-    if not authorization.startswith("Bearer "):
+    # 校验 Bearer 格式（缺失请求头时返回 401 而非 FastAPI 默认的 422 参数校验错误）
+    if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="认证方式错误，请使用 Bearer Token")
 
     token = authorization.removeprefix("Bearer ").strip()
     if not token:
         raise HTTPException(status_code=401, detail="Token 不能为空")
 
-    # 解码 Token
+    # 解码 Token（仅捕获 JWT 校验异常，数据库等系统异常不应伪装成 401）
     try:
         payload = decode_token(token)
-    except Exception:
+    except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token 无效或已过期，请重新登录")
 
     # 检查 token 类型

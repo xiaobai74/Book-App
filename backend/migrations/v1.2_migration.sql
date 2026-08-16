@@ -6,14 +6,42 @@
 -- ═══════════════════════════════════════════════════════════════
 
 -- ── 1. books 表新增标记字段 ──────────────────────────────
--- 若数据库中不存在该列则添加（支持重复执行）
+-- MySQL 8.0 不支持 ADD COLUMN IF NOT EXISTS / CREATE INDEX IF NOT EXISTS
+-- （那是 MariaDB 语法），改用 information_schema 判断，兼容 MySQL 8.0 且可重复执行。
 
-ALTER TABLE `books`
-    ADD COLUMN IF NOT EXISTS `is_marked` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '标记状态：1=已标记/置顶，0=普通',
-    ADD COLUMN IF NOT EXISTS `marked_at` DATETIME NULL DEFAULT NULL COMMENT '标记时间（用于置顶排序）';
+SET @col_exists := (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'books' AND COLUMN_NAME = 'is_marked'
+);
+SET @sql := IF(@col_exists = 0,
+    'ALTER TABLE `books` ADD COLUMN `is_marked` TINYINT(1) NOT NULL DEFAULT 0 COMMENT ''标记状态：1=已标记/置顶，0=普通''',
+    'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @col_exists := (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'books' AND COLUMN_NAME = 'marked_at'
+);
+SET @sql := IF(@col_exists = 0,
+    'ALTER TABLE `books` ADD COLUMN `marked_at` DATETIME NULL DEFAULT NULL COMMENT ''标记时间（用于置顶排序）''',
+    'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 -- 为标记排序创建复合索引（提升书架列表查询性能）
-CREATE INDEX IF NOT EXISTS `idx_books_user_marked` ON `books` (`user_id`, `is_marked` DESC, `marked_at` DESC, `deleted_at`);
+SET @idx_exists := (
+    SELECT COUNT(*) FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'books' AND INDEX_NAME = 'idx_books_user_marked'
+);
+SET @sql := IF(@idx_exists = 0,
+    'CREATE INDEX `idx_books_user_marked` ON `books` (`user_id`, `is_marked` DESC, `marked_at` DESC, `deleted_at`)',
+    'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 
 -- ── 2. 新建 reading_progress 表 ──────────────────────────

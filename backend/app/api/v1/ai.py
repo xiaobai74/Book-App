@@ -7,7 +7,7 @@ GET    /api/v1/ai/summary/{book_id}     → 获取 AI 摘要
 """
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,7 +28,15 @@ router = APIRouter(prefix="/ai", tags=["AI 功能"])
 
 class AiSearchRequest(BaseModel):
     """AI 搜索请求"""
-    query: str = Field(..., min_length=2, max_length=500, description="自然语言搜索关键词")
+    # 长度约束放在验证器中而非 Field，保证返回中文错误文案（同 RegisterRequest）
+    query: str = Field(..., description="自然语言搜索关键词")
+
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, v: str) -> str:
+        if len(v.strip()) > 500:
+            raise ValueError("搜索关键词最长 500 字符")
+        return v
 
 
 class AiSearchResultItem(BaseModel):
@@ -42,7 +50,7 @@ class AiSearchResultItem(BaseModel):
 
 class SummaryStatusResponse(BaseModel):
     """摘要状态响应"""
-    status: str  # queued | generating | done | failed | none
+    status: str  # queued | generating | running | done | failed | none
     ai_summary: str | None = None
     ai_summary_at: str | None = None
     error: str | None = None

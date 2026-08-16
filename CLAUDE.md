@@ -55,7 +55,7 @@ GIT_TERMINAL_PROMPT=0 git push origin master
   - `backend/app/models/` — ORM 模型：User、Book、Chapter、RefreshToken、CrawlSource、ReadingProgress（v1.2 新增）
   - `backend/app/services/` — 服务层：crawler_service（规则驱动爬虫引擎）、search_service（外部源站搜索）、crawl_manager（后台抓取流水线）、epub_service、txt_service、book_service（含标记/阅读进度逻辑 + 双字段搜索，v1.2 扩展）、ai_service（AI 语义搜索/摘要，v1.3 新增）、crawl_source_service（自定义源站 CRUD）
   - `backend/app/api/v1/ai.py` — AI 功能路由（v1.3 新增）：语义搜索、摘要生成
-  - `backend/rules/` — 规则引擎 + main.json（10 个内置源站规则）+ custom_sources.json（用户自定义规则）
+  - `backend/rules/` — 规则引擎 + main.json（11 个内置源站规则）+ custom_sources.json（用户自定义规则）
   - `backend/rules/rule_engine.py` — 规则加载、域名匹配、通用回退规则生成、自定义规则持久化
   - `backend/epub_output/` — 生成的 EPUB 文件
   - `backend/txt_output/` — 生成的 TXT 文件
@@ -67,8 +67,8 @@ GIT_TERMINAL_PROMPT=0 git push origin master
 - **`test/`** — 测试目录
   - `test/test plan/` — 前后端测试计划
   - `test/test report/` — 测试报告
-- **`api/API文档.md`** — API 接口完整文档（待更新 v1.3 新增的 AI 接口）
-- **`pyproject.toml`** — 项目元数据（Python ≥ 3.12，无依赖）
+- **`api/API文档.md`** — API 接口完整文档（已更新至 v1.3，含标记/章节/进度/AI 接口）
+- **`pyproject.toml`** — 项目元数据（Python ≥ 3.12，含 brotli/brotlicffi 等依赖）
 - **`.gitignore`** — 排除虚拟环境、IDE 配置、环境变量文件
 - **`.venv/`** — 本地虚拟环境
 
@@ -116,7 +116,7 @@ v1.2 已实现并合入 master，新增两大功能模块 + 删除功能增强�
 v1.3 已实现并合入 master，新增 AI 语义搜索：
 
 ### AI 语义搜索
-- 新增 `backend/app/services/ai_service.py`：Dify 工作流集成，向量匹配语义搜索
+- 新增 `backend/app/services/ai_service.py`：Dify 工作流集成，LLM 语义匹配搜索
 - 新增 `backend/app/api/v1/ai.py`：`POST /api/v1/ai/search` 端点
 - ShelfView.vue 新增搜索模式切换：普通 / 🤖 AI 语义
 - types/index.ts 新增 `AiSearchResult` 类型（含 match_reason 和 score）

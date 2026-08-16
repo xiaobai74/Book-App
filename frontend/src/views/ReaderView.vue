@@ -27,6 +27,17 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        <!-- 行间距调节（PRD READER-006 要求独立可调） -->
+        <el-dropdown trigger="click" @command="handleLineHeight">
+          <el-button text>行距</el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="compact">紧凑</el-dropdown-item>
+              <el-dropdown-item command="normal">标准</el-dropdown-item>
+              <el-dropdown-item command="relaxed">宽松</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </header>
 
@@ -99,6 +110,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getChapterContent, getChapters, updateReadingProgress, getReadingProgress } from '@/api/books'
+import { recordRecentBook } from '@/utils/recentBooks'
 import type { ChapterSummary, ChapterDetail } from '@/types'
 
 const route = useRoute()
@@ -114,18 +126,44 @@ const loading = ref(false)
 const errorMsg = ref<string | null>(null)
 
 // ─── 阅读设置 ────────────────────────────────────
+const FONT_SIZES = ['small', 'medium', 'large'] as const
+type FontSize = typeof FONT_SIZES[number]
+
 const isNightMode = ref(localStorage.getItem('reader_nightMode') === 'true')
-const fontSize = ref<'small' | 'medium' | 'large'>(
-  (localStorage.getItem('reader_fontSize') as any) || 'medium'
+const fontSize = ref<FontSize>(
+  (FONT_SIZES as readonly string[]).includes(localStorage.getItem('reader_fontSize') ?? '')
+    ? (localStorage.getItem('reader_fontSize') as FontSize)
+    : 'medium'
 )
 
-const fontSizeMap: Record<string, number> = { small: 14, medium: 16, large: 20 }
+// ── 行间距设置（独立调节，与字号解耦） ─────────────
+const LINE_HEIGHTS = ['compact', 'normal', 'relaxed'] as const
+type LineHeightOption = typeof LINE_HEIGHTS[number]
+const lineHeightOption = ref<LineHeightOption>(
+  (LINE_HEIGHTS as readonly string[]).includes(localStorage.getItem('reader_lineHeight') ?? '')
+    ? (localStorage.getItem('reader_lineHeight') as LineHeightOption)
+    : 'normal'
+)
+
+const fontSizeMap: Record<FontSize, number> = { small: 14, medium: 16, large: 20 }
 const fontSizePx = computed(() => fontSizeMap[fontSize.value])
-const lineHeight = computed(() => fontSize.value === 'large' ? '2.0' : '1.8')
+const lineHeightMap: Record<LineHeightOption, string> = {
+  compact: '1.5',
+  normal: '1.8',
+  relaxed: '2.2'
+}
+const lineHeight = computed(() => lineHeightMap[lineHeightOption.value])
 
 function handleFontSize(size: string) {
-  fontSize.value = size as any
+  if (!(FONT_SIZES as readonly string[]).includes(size)) return
+  fontSize.value = size as FontSize
   localStorage.setItem('reader_fontSize', size)
+}
+
+function handleLineHeight(option: string) {
+  if (!(LINE_HEIGHTS as readonly string[]).includes(option)) return
+  lineHeightOption.value = option as LineHeightOption
+  localStorage.setItem('reader_lineHeight', option)
 }
 
 function toggleNightMode() {
@@ -184,24 +222,33 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;')
 }
 
+// 请求序号：快速翻章时丢弃过期响应，防止旧章节内容覆盖新章节
+let fetchSeq = 0
+
 async function fetchChapter() {
+  const seq = ++fetchSeq
+  const index = currentIndex.value
   loading.value = true
   errorMsg.value = null
   try {
-    const { data } = await getChapterContent(bookId.value, currentIndex.value)
+    const { data } = await getChapterContent(bookId.value, index)
+    if (seq !== fetchSeq) return  // 已有更新的请求，丢弃过期响应
     if (data.success && data.data) {
       chapter.value = data.data
       // 更新进度
-      updateReadingProgress(bookId.value, currentIndex.value).catch(() => {})
+      updateReadingProgress(bookId.value, index).catch(() => {})
       // 滚动到顶部
       window.scrollTo({ top: 0, behavior: 'auto' })
     } else {
       errorMsg.value = data.error || '章节加载失败'
     }
   } catch (err: any) {
+    if (seq !== fetchSeq) return
     errorMsg.value = err?.response?.data?.error || err.message || '章节加载失败'
   } finally {
-    loading.value = false
+    if (seq === fetchSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -230,13 +277,11 @@ function handleKeyDown(e: KeyboardEvent) {
 }
 
 onMounted(async () => {
-  // 先获取章节列表以确定总数
+  // 记录最近阅读（供 Ctrl+K 命令面板"最近阅读"入口使用）
+  recordRecentBook(bookId.value)
+  // 先获取章节列表以确定总数（修复：统一走 loadToc，避免两处重复请求）
   try {
-    const { data: listData } = await getChapters(bookId.value)
-    if (listData.success && listData.data) {
-      chapters.value = listData.data
-      totalChapters.value = listData.data.length
-    }
+    await loadToc()
   } catch { /* 不影响阅读 */ }
 
   // 若未指定章节号，尝试恢复上次进度
@@ -258,10 +303,12 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown)
 })
 
-// 监听路由参数变化（目录跳转时）
+// 监听路由参数变化（浏览器前进/后退、手动修改 URL 时）。
+// 翻章函数内部已显式 fetch，此处 n === currentIndex 时跳过，避免重复请求。
 watch(() => route.params.chapterIndex, (newVal) => {
-  if (newVal) {
-    currentIndex.value = Number(newVal)
+  const n = Number(newVal)
+  if (Number.isFinite(n) && n >= 1 && n !== currentIndex.value) {
+    currentIndex.value = n
     fetchChapter()
   }
 })

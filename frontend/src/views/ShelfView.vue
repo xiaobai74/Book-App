@@ -66,7 +66,7 @@
         <!-- 书架内容（非加载中） -->
         <template v-else>
           <!-- ── v1.2 增强：筛选标签（AI 搜索模式下隐藏，因为不适用） ── -->
-          <div class="shelf-filter" v-if="displayBooks.length > 0 || (filterTab !== 'all' && !aiSearchMode)" v-show="!aiSearchMode">
+          <div class="shelf-filter" v-if="!aiSearchMode && (displayBooks.length > 0 || filterTab !== 'all')">
             <el-radio-group v-model="filterTab" size="small" @change="handleFilterChange">
               <el-radio-button value="all">全部</el-radio-button>
               <el-radio-button value="marked">已标记</el-radio-button>
@@ -249,6 +249,8 @@ const aiSearchMode = ref(false)
 const aiSearching = ref(false)
 const aiSearchResults = ref<AiSearchResult[]>([])
 const aiDebounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+// AI 请求序号：模式切换/连续搜索时丢弃过期响应，防止旧结果覆盖新结果
+let aiRequestSeq = 0
 
 // ── v1.2 新增：筛选标签 ────────────────────────────────
 type FilterTab = 'all' | 'marked' | 'done' | 'has_epub'
@@ -289,8 +291,8 @@ const displayBooks = computed<Book[]>(() => {
     return booksStore.filteredBooks
   }
 
-  // 正常浏览：优先使用全量缓存（数据更完整），回退到分页数据
-  return booksStore.allBooks.length > 0 ? booksStore.allBooks : booksStore.books
+  // 正常浏览：客户端模式使用全量缓存（零延迟），服务端模式使用分页数据（>200 本时 allBooks 仅含前 200 条，不完整）
+  return booksStore.isClientMode ? booksStore.allBooks : booksStore.books
 })
 
 onMounted(async () => {
@@ -299,13 +301,12 @@ onMounted(async () => {
     await booksStore.fetchAllBooks(null)
   } catch {
     // 全量加载失败时回退——至少保证分页数据能用
-    console.warn('全量书架加载失败，回退到分页模式')
     booksStore.searchMode = 'server'
   }
   try {
     await booksStore.fetchBooks(1, 20, null)
   } catch {
-    console.warn('分页书架加载失败')
+    // 分页加载失败时静默处理，页面显示空状态
   }
 })
 
@@ -330,6 +331,7 @@ function onSearchInput() {
 
 /** AI 自然语言搜索 */
 async function performAiSearch() {
+  const seq = ++aiRequestSeq
   const q = searchKeyword.value.trim()
   if (!q || q.length < 2) {
     aiSearchResults.value = []
@@ -343,6 +345,7 @@ async function performAiSearch() {
   aiSearching.value = true
   try {
     const { data } = await aiSearchBooks(q)
+    if (seq !== aiRequestSeq) return  // 已有更新的 AI 搜索，丢弃过期响应
     if (data.success && data.data) {
       aiSearchResults.value = data.data
     } else {
@@ -350,16 +353,20 @@ async function performAiSearch() {
       ElMessage.warning('AI 搜索未找到匹配结果')
     }
   } catch (err: any) {
+    if (seq !== aiRequestSeq) return
     aiSearchResults.value = []
     const msg = err?.response?.data?.error || err?.message || 'AI 搜索请求失败'
     ElMessage.error(msg)
   } finally {
-    aiSearching.value = false
+    if (seq === aiRequestSeq) {
+      aiSearching.value = false
+    }
   }
 }
 
 /** AI 模式切换 */
 function onAiModeChange(val: boolean) {
+  aiRequestSeq++  // 使所有在途 AI 请求失效，避免旧结果覆盖新模式
   if (!val) {
     // 关闭 AI 模式 → 清除 AI 结果，恢复本地筛选
     aiSearchResults.value = []
@@ -499,6 +506,13 @@ async function toggleMark(book: Book) {
       if (filteredIdx >= 0) {
         booksStore.filteredBooks[filteredIdx] = data.data
       }
+      // 同步更新 searchResults（服务端搜索模式下星标也应有反馈）
+      const srIdx = booksStore.searchResults.findIndex(b => b.id === book.id)
+      if (srIdx >= 0) {
+        booksStore.searchResults[srIdx] = data.data
+      }
+      // 标记状态变更后按书架优先级（已标记置顶 → 时间倒序）重排
+      booksStore.resortLists()
       ElMessage.success(data.data.is_marked ? '已标记' : '已取消标记')
     }
   } catch (err: any) {
@@ -754,7 +768,8 @@ function confirmDelete(book: Book) {
   flex: 1;
 }
 
-/* 三点跳动动画 */
+/* 三点跳动动画的 keyframes 与 animation 声明已移至 global.css
+   （全局零动画样式会禁用 scoped 动画，故在全局统一豁免） */
 .ai-search-dots {
   display: flex;
   align-items: center;
@@ -767,21 +782,5 @@ function confirmDelete(book: Book) {
   height: 6px;
   border-radius: 50%;
   background: var(--accent-ice);
-  animation: ai-dot-bounce 1.2s ease-in-out infinite;
-}
-
-.ai-search-dots .dot:nth-child(1) { animation-delay: 0s; }
-.ai-search-dots .dot:nth-child(2) { animation-delay: 0.15s; }
-.ai-search-dots .dot:nth-child(3) { animation-delay: 0.3s; }
-
-@keyframes ai-dot-bounce {
-  0%, 60%, 100% {
-    opacity: 0.25;
-    transform: scale(0.8);
-  }
-  30% {
-    opacity: 1;
-    transform: scale(1.2);
-  }
 }
 </style>

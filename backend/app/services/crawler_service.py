@@ -14,9 +14,8 @@ import logging
 import random
 import re
 import ssl
-import time
-from dataclasses import dataclass, field
-from urllib.parse import urlencode, urljoin, urlparse
+from dataclasses import dataclass
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -83,6 +82,9 @@ class CrawlerService:
         self._connectivity_cache: dict[str, ConnectivityResult] = {}
 
         # SSL 上下文（忽略证书验证）
+        # 注意：国内部分小说站证书不规范（自签名/过期/域名不匹配），
+        # 因此全局关闭证书校验以保证抓取可用；存在中间人内容投毒风险，
+        # 仅建议用于个人阅读场景。
         self._ssl_context = ssl.create_default_context()
         self._ssl_context.check_hostname = False
         self._ssl_context.verify_mode = ssl.CERT_NONE
@@ -226,7 +228,7 @@ class CrawlerService:
                 last_err = e
                 if attempt < retries - 1:
                     wait = 2 ** attempt
-                    logger.warning(f"POST 请求失败 (尝试 {attempt + 1}/{retries}): {e}，{wait}s 后重试")
+                    logger.warning(f"GET 请求失败 (尝试 {attempt + 1}/{retries}): {e}，{wait}s 后重试")
                     await asyncio.sleep(wait)
             except Exception as e:
                 last_err = e
@@ -545,6 +547,7 @@ class CrawlerService:
         content_selector = chapter_rule.get("content", "")
         title_selector = chapter_rule.get("title", "")
         filter_tag = chapter_rule.get("filterTag", "")
+        filter_element = chapter_rule.get("filterElement", "")
         filter_txt = chapter_rule.get("filterTxt", "")
 
         soup = BeautifulSoup(html, "html.parser")
@@ -552,6 +555,23 @@ class CrawlerService:
         # ── 默认清理 script/style 等（全局安全清理）──────────
         for tag in soup(["script", "style", "ins", "noscript", "iframe", "form"]):
             tag.decompose()
+
+        # ── 删除推广元素（filterElement: 整块删除，含内部文字）──
+        # 用于清理正文前后的站内推广块，例如:
+        #   <div id="content_tip"><b>最新网址：...</b></div>
+        #   <p><a href="...">亲,点击进去,给个好评呗...</a>...</p>
+        # 语义与 filterTag 不同: filterTag 只去掉标签壳保留文字，
+        # filterElement 则彻底移除元素及其内部文字。
+        if filter_element:
+            for selector in filter_element.split(","):
+                selector = selector.strip()
+                if not selector:
+                    continue
+                try:
+                    for el in soup.select(selector):
+                        el.decompose()
+                except Exception as e:
+                    logger.warning(f"filterElement 选择器无效: {selector} ({e})")
 
         # ── 提取章节标题 ──────────────────────────
         chapter_title = ""

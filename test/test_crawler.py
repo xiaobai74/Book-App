@@ -121,6 +121,36 @@ def test_form_data_parsing():
     print(f"  [PASS] Form data parse: {data}")
 
 
+def test_filter_element_removal():
+    """测试 filterElement 整块删除推广元素"""
+    from app.services.crawler_service import CrawlerService
+
+    svc = CrawlerService()
+    rule = {
+        "chapter": {
+            "title": ".bookname > h1",
+            "content": "#content",
+            "paragraphTagClosed": False,
+            "paragraphTag": "<br>+",
+            "filterElement": "#content_tip, #content > p",
+            "filterTag": "div, p, script",
+        }
+    }
+    html = (
+        '<div id="content"><div id="content_tip"><b>最新网址：www.xbiqugu.la</b></div>'
+        "正文第一段。<br>正文第二段。"
+        '<p><a href="http://koubei.baidu.com/s/xbiqugu.la">亲,点击进去,给个好评呗</a>'
+        "<br>手机站全新改版升级地址：http://wap.xbiqugu.la，无广告清新阅读！</p></div>"
+    )
+    content = svc._parse_chapter_content(html, rule)
+    assert "最新网址" not in content, f"content_tip 未移除: {content[:50]}"
+    assert "好评" not in content, f"好评推广未移除: {content[-80:]}"
+    assert "手机站" not in content, f"手机站推广未移除: {content[-80:]}"
+    assert "正文第一段。" in content, "正文被误删"
+    assert "正文第二段。" in content, "正文被误删"
+    print("  [PASS] filterElement 整块删除推广元素 OK")
+
+
 def run_all():
     tests = [
         test_rule_loading,
@@ -132,6 +162,7 @@ def run_all():
         test_search_service_import,
         test_cookies_parsing,
         test_form_data_parsing,
+        test_filter_element_removal,
     ]
     passed = 0
     failed = 0

@@ -120,8 +120,13 @@ async function handleRegister() {
     try {
       await authStore.register({ email: form.email.trim(), password: form.password })
       // 注册成功后自动登录
-      await authStore.login({ email: form.email.trim(), password: form.password })
-      router.push('/shelf')
+      try {
+        await authStore.login({ email: form.email.trim(), password: form.password })
+        router.push('/shelf')
+      } catch (err: any) {
+        // 注册已成功，仅登录失败——提示准确文案，用户可手动登录
+        errorMsg.value = err?.response?.data?.error || err.message || '注册成功，但自动登录失败，请手动登录'
+      }
     } catch (err: any) {
       errorMsg.value = err?.response?.data?.error || err.message || '注册失败'
     } finally {

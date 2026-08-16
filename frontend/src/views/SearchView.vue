@@ -70,7 +70,7 @@
 
           <!-- 无结果 -->
           <div v-else-if="booksStore.searchResults.length === 0" class="empty-state">
-            <p>书架中未找到相关小说，试试<a href="javascript:void(0)" @click="searchMode = 'web'; doSearch()" style="color:var(--accent-ice);text-decoration:underline">全网搜索</a></p>
+            <p>书架中未找到相关小说，试试<a href="#" @click.prevent="searchMode = 'web'" style="color:var(--accent-ice);text-decoration:underline">全网搜索</a></p>
           </div>
 
           <!-- 搜索结果 -->
@@ -286,7 +286,9 @@ async function loadShelfSnapshot() {
             shelfUrls.value.add(b.source_url.trim())
           }
         }
-        hasMore = data.data.length === pageSize
+        // 用 total_pages 判断是否还有下一页，避免整百总数时多发一次空页请求
+        const meta = data.meta
+        hasMore = meta ? page < meta.total_pages : data.data.length === pageSize
         page++
       } else {
         hasMore = false
@@ -297,18 +299,6 @@ async function loadShelfSnapshot() {
 
 function isAddedToShelf(sourceUrl: string): boolean {
   return shelfUrls.value.has(sourceUrl.trim())
-}
-
-/** 根据 source_url 判断在书架中是否已存在（不区分 id） */
-function findBookInShelf(sourceUrl: string): string | null {
-  const trimmed = sourceUrl.trim()
-  const allBooks = booksStore.books
-  for (const b of allBooks) {
-    if (b.source_url && b.source_url.trim() === trimmed) {
-      return b.id
-    }
-  }
-  return null
 }
 
 async function doSearch() {

@@ -42,6 +42,7 @@
       "paragraphTagClosed": false,
       "paragraphTag": "<br>+",
       "filterTxt": "一秒记住【文学巴士&nbsp;】，精彩无弹窗免费阅读！|(www.xbiquge.la 新笔趣阁)，高速全文字在线阅读！|天才一秒记住本站地址：[^\n]+|天才一秒记住本站地址：.+。手机版阅读网址：m\\.|手机用户请浏览阅读，更优质的阅读体验。|天才壹秒記住.+，為您提供精彩小說閱讀。|\\(本章完\\)|https?://[a-z0-9.-]+\\.[a-z]{2,}[^\\s]*|记住本站网址[^\n]*",
+      "filterElement": "#content_tip, #content > p",
       "filterTag": "div, p, script"
     }
   },

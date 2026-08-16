@@ -20,6 +20,20 @@ import type { Book, BookDetail, CrawlStatus, AddBookRequest, PaginationMeta, Sea
 /** 客户端搜索阈值：书架总量超过此值自动切换为服务端搜索 */
 const CLIENT_SEARCH_THRESHOLD = 200
 
+/**
+ * 书架排序：与后端 list_books 一致 — 已标记置顶（按标记时间倒序），未标记按添加时间倒序
+ */
+function compareBooks(a: Book, b: Book): number {
+  if (a.is_marked !== b.is_marked) return a.is_marked ? -1 : 1
+  const aTime = a.is_marked
+    ? new Date(a.marked_at || 0).getTime()
+    : new Date(a.added_at || 0).getTime()
+  const bTime = b.is_marked
+    ? new Date(b.marked_at || 0).getTime()
+    : new Date(b.added_at || 0).getTime()
+  return bTime - aTime
+}
+
 export const useBooksStore = defineStore('books', () => {
   const books = ref<Book[]>([])
   const currentBook = ref<BookDetail | null>(null)
@@ -66,30 +80,14 @@ export const useBooksStore = defineStore('books', () => {
     try {
       const { data } = await getBooks(1, CLIENT_SEARCH_THRESHOLD, marked)
       if (data.success) {
-        allBooks.value = data.data || []
+        allBooks.value = [...(data.data || [])].sort(compareBooks)
         filteredBooks.value = [...allBooks.value]
-        // 如果 total 超过阈值，自动切换为服务端搜索
-        if ((data.meta?.total || 0) > CLIENT_SEARCH_THRESHOLD) {
-          searchMode.value = 'server'
-        }
+        // 书架总量超过阈值 → 服务端搜索；未超过 → 恢复客户端快速检索
+        searchMode.value = (data.meta?.total || 0) > CLIENT_SEARCH_THRESHOLD ? 'server' : 'client'
       }
     } finally {
       loading.value = false
     }
-  }
-
-  /** v1.2 新增：客户端过滤搜索（书名 + 作者，不区分大小写） */
-  function clientSearch(keyword: string) {
-    if (!keyword || keyword.trim().length < 2) {
-      // 关键词不足 2 字符时恢复全量
-      filteredBooks.value = [...allBooks.value]
-      return
-    }
-    const lower = keyword.trim().toLowerCase()
-    filteredBooks.value = allBooks.value.filter(
-      b => (b.title && b.title.toLowerCase().includes(lower))
-        || (b.author && b.author.toLowerCase().includes(lower))
-    )
   }
 
   /** v1.2 新增：客户端多条件筛选（关键词 + 标记状态 + 其他条件） */
@@ -151,8 +149,8 @@ export const useBooksStore = defineStore('books', () => {
   async function addBook(payload: AddBookRequest) {
     const { data } = await addBookApi(payload)
     if (data.success && data.data) {
-      // 同步更新 allBooks 缓存
-      allBooks.value.unshift(data.data)
+      // 同步更新 allBooks 缓存（按书架优先级排序，保持标记置顶规则）
+      allBooks.value = [...allBooks.value, data.data].sort(compareBooks)
       filteredBooks.value = [...allBooks.value]
       await fetchBooks(pagination.value.page)
       return data.data
@@ -168,10 +166,19 @@ export const useBooksStore = defineStore('books', () => {
       // 同步更新 allBooks 缓存和过滤列表
       allBooks.value = allBooks.value.filter((b) => b.id !== bookId)
       filteredBooks.value = filteredBooks.value.filter((b) => b.id !== bookId)
-      pagination.value.total--
+      // 同步更新服务端搜索结果（可能从搜索结果列表删除）
+      searchResults.value = searchResults.value.filter((b) => b.id !== bookId)
+      pagination.value.total = Math.max(0, pagination.value.total - 1)
     } else {
       throw new Error(data.error || '删除失败')
     }
+  }
+
+  /** 按书架优先级（已标记置顶 → 时间倒序）重排三个展示列表，保持与后端排序一致 */
+  function resortLists() {
+    books.value = [...books.value].sort(compareBooks)
+    allBooks.value = [...allBooks.value].sort(compareBooks)
+    filteredBooks.value = [...filteredBooks.value].sort(compareBooks)
   }
 
   /** 搜索（服务端） */
@@ -276,9 +283,9 @@ export const useBooksStore = defineStore('books', () => {
     isClientMode,
     fetchBooks,
     fetchAllBooks,
-    clientSearch,
     clientFilter,
     resetFilter,
+    resortLists,
     // 原有方法
     fetchBookDetail,
     addBook,

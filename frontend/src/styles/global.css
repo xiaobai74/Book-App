@@ -46,10 +46,45 @@ body {
 a { color: var(--accent); text-decoration: none; }
 h1, h2, h3, h4 { margin: 0; }
 
-/* 零动画 */
+/* 零动画（保持极简界面风格） */
 *, *::before, *::after {
   animation: none !important;
   transition: none !important;
+}
+
+/* 例外：PRD 3.1 允许的加载指示动画。
+   全局 keyframes 定义于此（组件内 scoped keyframes 会被 Vue 重命名且受上方
+   animation:none 影响，故统一放全局）。 */
+
+/* AI 搜索三点跳动（ShelfView 使用） */
+@keyframes ai-dot-bounce {
+  0%, 60%, 100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+.ai-search-dots .dot {
+  animation: ai-dot-bounce 1.2s ease-in-out infinite !important;
+}
+
+.ai-search-dots .dot:nth-child(1) { animation-delay: 0s !important; }
+.ai-search-dots .dot:nth-child(2) { animation-delay: 0.15s !important; }
+.ai-search-dots .dot:nth-child(3) { animation-delay: 0.3s !important; }
+
+/* 加载进度条（书架/详情/阅读器 loading 状态） */
+@keyframes loading-slide {
+  0% { left: 0; }
+  50% { left: 62%; }
+  100% { left: 0; }
+}
+
+.loading-bar::after {
+  animation: loading-slide 1.4s ease-in-out infinite !important;
 }
 
 /* ─── Layout ───────────────────────────────────────── */

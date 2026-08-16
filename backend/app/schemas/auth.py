@@ -7,13 +7,18 @@ from pydantic import BaseModel, Field, field_validator
 
 class RegisterRequest(BaseModel):
     """注册请求"""
-    email: str = Field(..., min_length=5, max_length=255, description="邮箱地址")
-    password: str = Field(..., min_length=8, max_length=64, description="密码（8-64位，需包含字母和数字）")
+    # 注意：长度约束不放在 Field(min_length/max_length) 中，否则 Pydantic 会
+    # 先抛出英文原生错误消息（如 "String should have at least 8 characters"），
+    # 绕过下方自定义验证器的中文文案。长度校验统一在 field_validator 中完成。
+    email: str = Field(..., description="邮箱地址")
+    password: str = Field(..., description="密码（8-64位，需包含字母和数字）")
 
     @field_validator("email")
     @classmethod
     def validate_email(cls, v: str) -> str:
         v = v.strip().lower()
+        if len(v) < 5 or len(v) > 255:
+            raise ValueError("邮箱长度需为 5-255 位")
         if "@" not in v or "." not in v.split("@")[-1]:
             raise ValueError("邮箱格式不正确")
         return v
@@ -56,7 +61,8 @@ class RefreshTokenRequest(BaseModel):
 class PasswordChangeRequest(BaseModel):
     """修改密码请求"""
     old_password: str = Field(..., min_length=1, description="当前密码")
-    new_password: str = Field(..., min_length=8, max_length=64, description="新密码（8-64位，需包含字母和数字）")
+    # 长度约束放在验证器中而非 Field，保证返回中文错误文案（同 RegisterRequest）
+    new_password: str = Field(..., description="新密码（8-64位，需包含字母和数字）")
 
     @field_validator("new_password")
     @classmethod

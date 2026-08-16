@@ -5,10 +5,11 @@ EPUB 生成服务
 """
 
 import logging
-import os
 from pathlib import Path
 
 from ebooklib import epub
+
+from app.utils.filenames import safe_filename_component
 
 logger = logging.getLogger(__name__)
 
@@ -159,9 +160,10 @@ p { text-indent: 2em; margin: 0.5em 0; }
 
         # ── 写入文件 ────────────────────────────────
         # 使用 book_id 作为文件名前缀，防止同名书覆盖
-        safe_title = "".join(c for c in title if c.isalnum() or c in " _-（）()").strip()
-        safe_title = safe_title or "book"  # 标题全部被过滤时使用默认值
-        filename = f"({book_id}){safe_title}-{author}.epub"
+        # 书名与作者均做安全过滤，避免 Windows 非法字符导致写入失败
+        safe_title = safe_filename_component(title, "book")
+        safe_author = safe_filename_component(author, "未知作者")
+        filename = f"({book_id}){safe_title}-{safe_author}.epub"
         filepath = str(self.output_dir / filename)
 
         epub.write_epub(filepath, book, {})

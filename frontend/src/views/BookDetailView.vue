@@ -27,7 +27,18 @@
           <div class="card" style="margin-bottom:24px">
             <div class="detail-header">
               <div style="flex:1">
-                <h1 style="font-size:clamp(28px,4vw,36px);font-weight:700">{{ book.title }}</h1>
+                <!-- v1.3 修复: PRD 要求详情页有星标标记按钮（原仅书架列表页可标记） -->
+                <h1 style="font-size:clamp(28px,4vw,36px);font-weight:700;display:inline-flex;align-items:center;gap:10px">
+                  {{ book.title }}
+                  <button
+                    class="mark-btn"
+                    :title="book.is_marked ? '取消标记' : '标记此书'"
+                    @click="toggleMark"
+                  >
+                    <span v-if="book.is_marked" class="star star-filled">★</span>
+                    <span v-else class="star star-empty">☆</span>
+                  </button>
+                </h1>
                 <p class="lead" style="margin-top:6px">作者：{{ book.author }}</p>
                 <p v-if="book.source_url" style="font-size:12px;color:var(--muted);margin-top:2px">
                   来源：<a :href="book.source_url" target="_blank" rel="noopener">{{ book.source_url }}</a>
@@ -172,7 +183,7 @@ import type { Book, ChapterSummary } from '@/types'
 import TopNav from '@/components/TopNav.vue'
 import BookCover from '@/components/BookCover.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
-import { getDownloadUrl, getChapters, getReadingProgress, generateAiSummary, getAiSummary } from '@/api/books'
+import { getDownloadUrl, getChapters, getReadingProgress, generateAiSummary, getAiSummary, toggleMarkBook } from '@/api/books'
 
 const route = useRoute()
 const router = useRouter()
@@ -270,7 +281,6 @@ async function handleGenerateSummary() {
         aiSummary.value = data.data.ai_summary || null
         aiSummaryAt.value = data.data.ai_summary_at || null
         aiSummaryStatus.value = 'done'
-        aiSummaryLoading.value = false
         return
       }
       if (data.data.status === 'queued' || data.data.status === 'generating') {
@@ -280,6 +290,10 @@ async function handleGenerateSummary() {
       if (data.data.error) {
         aiSummaryError.value = data.data.error
       }
+    } else {
+      // 请求成功但业务失败：置为 failed，避免界面永久停留在"生成中"
+      aiSummaryStatus.value = 'failed'
+      aiSummaryError.value = data.error || '请求失败'
     }
   } catch (err: any) {
     aiSummaryStatus.value = 'failed'
@@ -369,16 +383,19 @@ function startCrawlPolling(bookId: string) {
       if (status) {
         crawlText.value = `${status.chapter_count}/${status.total_chapters ?? '?'} 章`
         crawlPercent.value = Math.round(status.percentage)
-        if (book.value) {
-          book.value.status = status.status
-          book.value.chapter_count = status.chapter_count
+        // 缓存当前书籍引用：异步回调中 book.value 的窄化会失效（TS18047）
+        const current = book.value
+        if (current) {
+          current.status = status.status
+          current.chapter_count = status.chapter_count
         }
         if (status.status === 'done' || status.status === 'failed') {
           stopCrawlPolling()
+          if (!current) return
           if (status.status === 'done') {
             // 重新获取完整的书籍信息（包含 epub/txt 状态和章节数据）
             try {
-              const updated = await booksStore.fetchBookDetail(book.value.id)
+              const updated = await booksStore.fetchBookDetail(current.id)
               if (updated && book.value) {
                 book.value = updated
               }
@@ -390,7 +407,7 @@ function startCrawlPolling(bookId: string) {
           } else {
             // 抓取失败：重新获取书籍信息以恢复正确状态
             try {
-              const updated = await booksStore.fetchBookDetail(book.value.id)
+              const updated = await booksStore.fetchBookDetail(current.id)
               if (updated && book.value) {
                 book.value = updated
               }
@@ -422,6 +439,20 @@ async function handleCrawl() {
     ElMessage.error(err?.response?.data?.error || err.message || '触发抓取失败')
   } finally {
     crawling.value = false
+  }
+}
+
+// ── 星标标记 v1.3 修复（PRD 4 章信息架构要求详情页有标记按钮） ──
+async function toggleMark() {
+  if (!book.value) return
+  try {
+    const { data } = await toggleMarkBook(book.value.id)
+    if (data.success && data.data) {
+      book.value = data.data
+      ElMessage.success(data.data.is_marked ? '已标记' : '已取消标记')
+    }
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.error || err.message || '操作失败')
   }
 }
 
@@ -492,6 +523,34 @@ async function handleDownload(format: 'epub' | 'txt') {
 .meta {
   font-size: 12px;
   color: var(--muted);
+}
+
+/* ── 星标标记按钮（与书架页一致） ─────────────────── */
+.mark-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  transition: transform 0.15s;
+}
+
+.mark-btn:hover {
+  transform: scale(1.2);
+}
+
+.star {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.star-empty {
+  color: var(--muted);
+}
+
+.star-filled {
+  color: #c9a96e;
 }
 
 /* ── AI 摘要 v1.3 ──────────────────────────────────── */

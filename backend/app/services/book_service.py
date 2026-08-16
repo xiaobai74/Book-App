@@ -8,9 +8,9 @@ v1.2 扩展：标记置顶、章节获取、阅读进度。
 import logging
 import os
 from datetime import UTC, datetime
-from math import ceil
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.book import Book
@@ -134,6 +134,11 @@ class BookService:
         book.deleted_at = datetime.now(UTC)
         await db.flush()
 
+        # 清理章节与阅读进度记录，避免软删除后留下孤儿数据（章节正文最占空间）
+        await db.execute(delete(Chapter).where(Chapter.book_id == book_id))
+        await db.execute(delete(ReadingProgress).where(ReadingProgress.book_id == book_id))
+        await db.flush()
+
         # 清理本地文件
         for path in (epub_path, txt_path):
             if not path:
@@ -162,15 +167,25 @@ class BookService:
 
         v1.2 增强：支持同时搜索书名和作者字段，匹配任一字段即返回。
         """
+        keyword = keyword.strip()
+        if not keyword:
+            return [], 0
+
         offset = (page - 1) * page_size
-        like_pattern = f"%{keyword}%"
+        # 转义 LIKE 通配符（% _ \），避免用户输入被当作通配符导致语义错误
+        escaped = (
+            keyword.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        like_pattern = f"%{escaped}%"
 
         conditions = [
             Book.user_id == user.id,
             Book.deleted_at.is_(None),
             or_(
-                Book.title.like(like_pattern),
-                Book.author.like(like_pattern),
+                Book.title.like(like_pattern, escape="\\"),
+                Book.author.like(like_pattern, escape="\\"),
             ),
         ]
 
@@ -205,27 +220,34 @@ class BookService:
         """
         book = await BookService.get_book_detail(db, user, book_id)
 
-        if book.status == "crawling":
-            from app.middleware.error_handler import AppException
-            raise AppException(status_code=409, detail="该书籍正在抓取中，请勿重复操作")
-
         if not book.source_url:
             from app.middleware.error_handler import AppException
             raise AppException(status_code=400, detail="缺少 source_url，无法抓取")
 
-        book.status = "crawling"
+        # 原子状态守卫：并发触发时仅第一个请求成功置为 crawling，其余返回 409
+        result = await db.execute(
+            update(Book)
+            .where(
+                Book.id == book_id,
+                Book.user_id == user.id,
+                Book.status != "crawling",
+            )
+            .values(status="crawling")
+        )
+        if result.rowcount == 0:
+            from app.middleware.error_handler import AppException
+            raise AppException(status_code=409, detail="该书籍正在抓取中，请勿重复操作")
+
         # 注意：不在此处清除 chapter_count / epub_path / txt_path
         # 旧数据保留到新内容抓取成功后，由 crawl_manager 更新覆盖
         # 这样即使抓取失败，用户仍可阅读旧章节、下载之前生成的文件
-        await db.flush()
+        # 先提交状态变更，避免后台任务与请求会话的提交顺序竞态
+        await db.commit()
 
         # 启动后台抓取
         from app.services.crawl_manager import start_crawl
         import asyncio as _asyncio
-        try:
-            loop = _asyncio.get_running_loop()
-        except RuntimeError:
-            loop = _asyncio.get_event_loop()
+        loop = _asyncio.get_running_loop()
         loop.create_task(start_crawl(book_id))
 
         return book
@@ -341,6 +363,9 @@ class BookService:
 
         若无记录则返回默认值（第 1 章）。
         """
+        # 校验书籍存在且属于当前用户（与 update_reading_progress 行为一致）
+        await BookService.get_book_detail(db, user, book_id)
+
         result = await db.execute(
             select(ReadingProgress).where(
                 ReadingProgress.book_id == book_id,
@@ -380,32 +405,26 @@ class BookService:
                 detail=f"章节序号必须在 1 到 {max(book.chapter_count, 1)} 之间",
             )
 
-        result = await db.execute(
-            select(ReadingProgress).where(
-                ReadingProgress.book_id == book_id,
-                ReadingProgress.user_id == user.id,
-            )
-        )
-        progress = result.scalar_one_or_none()
-
         now = datetime.now(UTC).replace(tzinfo=None)
-        if progress is None:
-            progress = ReadingProgress(
-                book_id=book_id,
-                user_id=user.id,
-                last_chapter_index=chapter_index,
-            )
-            db.add(progress)
-        else:
-            progress.last_chapter_index = chapter_index
-            progress.updated_at = now
-
+        # 使用 INSERT ... ON DUPLICATE KEY UPDATE 实现原子 upsert，
+        # 避免并发两次请求都 SELECT 到 None 后双 INSERT 触发唯一键冲突
+        stmt = mysql_insert(ReadingProgress).values(
+            book_id=book_id,
+            user_id=user.id,
+            last_chapter_index=chapter_index,
+            updated_at=now,
+        )
+        stmt = stmt.on_duplicate_key_update(
+            last_chapter_index=stmt.inserted.last_chapter_index,
+            updated_at=now,
+        )
+        await db.execute(stmt)
         await db.flush()
 
         return ReadingProgressResponse(
-            book_id=progress.book_id,
-            last_chapter_index=progress.last_chapter_index,
-            updated_at=progress.updated_at,
+            book_id=book_id,
+            last_chapter_index=chapter_index,
+            updated_at=now,
         )
 
 
@@ -444,13 +463,4 @@ def chapter_to_detail_response(chapter: Chapter) -> ChapterDetailResponse:
         title=chapter.title,
         content=chapter.content,
         word_count=chapter.word_count,
-    )
-
-
-def progress_to_response(progress: ReadingProgress) -> ReadingProgressResponse:
-    """将阅读进度 ORM 模型转换为响应"""
-    return ReadingProgressResponse(
-        book_id=progress.book_id,
-        last_chapter_index=progress.last_chapter_index,
-        updated_at=progress.updated_at,
     )

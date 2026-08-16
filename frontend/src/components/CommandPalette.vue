@@ -81,7 +81,9 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
+import { ElInput } from 'element-plus'
 import { useBooksStore } from '@/stores'
+import { getRecentBookIds, recordRecentBook, MAX_RECENT } from '@/utils/recentBooks'
 import type { Book } from '@/types'
 
 const router = useRouter()
@@ -91,29 +93,7 @@ const booksStore = useBooksStore()
 const visible = ref(false)
 const query = ref('')
 const selectedIndex = ref(0)
-const inputRef = ref<any>(null)
-const debounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
-
-// ── 最近阅读（localStorage 持久化） ──────────────────
-const RECENT_BOOKS_KEY = 'recent_books'
-const MAX_RECENT = 5
-
-/** 读取最近阅读的书 ID 列表 */
-function getRecentBookIds(): string[] {
-  try {
-    const raw = localStorage.getItem(RECENT_BOOKS_KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
-  }
-}
-
-/** 暴露方法：外部可在进入阅读器时调用此方法记录 */
-function recordRecentBook(bookId: string) {
-  const ids = getRecentBookIds().filter(id => id !== bookId)
-  ids.unshift(bookId)
-  localStorage.setItem(RECENT_BOOKS_KEY, JSON.stringify(ids.slice(0, MAX_RECENT)))
-}
+const inputRef = ref<InstanceType<typeof ElInput> | null>(null)
 
 // ── 计算属性 ──────────────────────────────────────────
 const hasActiveQuery = computed(() => query.value.trim().length >= 2)
@@ -152,15 +132,15 @@ const displayResults = computed<Book[]>(() => {
 
 // ── 搜索逻辑 ──────────────────────────────────────────
 function onSearchInput() {
-  if (debounceTimer.value) clearTimeout(debounceTimer.value)
-  debounceTimer.value = setTimeout(() => {
-    selectedIndex.value = 0
-  }, 150)
+  // 结果列表为 computed 即时更新，无需防抖；仅重置键盘选中项。
+  // 原 150ms 防抖会覆盖用户此期间的键盘导航，故移除。
+  selectedIndex.value = 0
 }
 
 // ── 键盘导航 ──────────────────────────────────────────
-function onKeydown(e: KeyboardEvent) {
-  switch (e.key) {
+function onKeydown(e: Event) {
+  const ev = e as KeyboardEvent
+  switch (ev.key) {
     case 'ArrowDown':
       e.preventDefault()
       selectedIndex.value = Math.min(selectedIndex.value + 1, displayResults.value.length - 1)
@@ -202,9 +182,8 @@ function navigateTo(book: Book) {
 function onOpened() {
   nextTick(() => {
     // 聚焦搜索输入框
-    const input = document.querySelector('.command-palette-dialog input') as HTMLInputElement
-    input?.focus()
-    input?.select()
+    inputRef.value?.focus()
+    inputRef.value?.select()
     // 确保全量数据已加载
     if (booksStore.allBooks.length === 0) {
       booksStore.fetchAllBooks()
@@ -249,9 +228,6 @@ function highlightMatch(text: string): string {
 function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
-
-// 暴露方法给父组件
-defineExpose({ visible, recordRecentBook })
 </script>
 
 <style scoped>

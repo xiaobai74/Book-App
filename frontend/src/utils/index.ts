@@ -2,9 +2,12 @@
    小说管理App · 工具函数
    ═══════════════════════════════════════════════════════ */
 
-/** 格式化日期为 zh-CN 格式 */
-export function formatDate(ts: string | number): string {
-  return new Date(ts).toLocaleDateString('zh-CN', {
+/** 格式化日期为 zh-CN 格式；空值或无效日期返回占位符 "—"（避免渲染 Invalid Date） */
+export function formatDate(ts: string | number | null | undefined): string {
+  if (ts === null || ts === undefined || ts === '') return '—'
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleDateString('zh-CN', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit'

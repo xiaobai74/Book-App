@@ -29,8 +29,10 @@ DELETE /api/v1/crawl-sources/{id}           → 删除自定义源站
 POST   /api/v1/crawl-sources/test           → 测试自定义规则
 """
 
+import ipaddress
 import os
 from math import ceil
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
@@ -62,7 +64,6 @@ from app.services.book_service import (
     book_to_response,
     chapter_to_detail_response,
     chapter_to_response,
-    progress_to_response,
 )
 from app.services.crawl_source_service import CrawlSourceService
 from app.services.crawler_service import crawler
@@ -420,6 +421,25 @@ async def download_book(
 # URL 连通性预检
 # ============================================================
 
+def _validate_public_url(url: str) -> None:
+    """SSRF 防护：仅允许 http/https 协议，拒绝环回/私网/链路本地地址的 URL。
+
+    防止认证用户利用本服务探测内网（如 127.0.0.1、169.254.169.254 等）。
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise AppException(status_code=400, detail="仅支持 http/https 协议的网络地址")
+    try:
+        ip = ipaddress.ip_address(parsed.hostname or "")
+    except ValueError:
+        # 域名不做 DNS 解析（避免引入解析依赖），仅拦截 IP 字面量
+        ip = None
+    if ip is not None and (
+        ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast
+    ):
+        raise AppException(status_code=400, detail="不允许访问内网或保留地址")
+
+
 class CheckUrlRequest(BaseModel):
     url: str = Field(..., min_length=1, max_length=2048, description="要检查的小说源站 URL")
 
@@ -446,6 +466,7 @@ async def check_url(
 
     返回连通性检测结果和建议，帮助用户判断 URL 是否有效。
     """
+    _validate_public_url(body.url)
     result = await crawler.check_connectivity(body.url)
     return ApiResponse.ok(data=CheckUrlResponse(
         reachable=result.reachable,
@@ -552,5 +573,6 @@ async def test_crawl_source(
 
     返回章节总数和前 5 条章节信息，帮助用户验证规则配置是否有效。
     """
+    _validate_public_url(data.url)
     result = await CrawlSourceService.test_rule(data.url, data.rule_json)
     return ApiResponse.ok(data=CrawlSourceTestResponse(**result))

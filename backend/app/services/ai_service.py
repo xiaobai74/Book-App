@@ -161,7 +161,27 @@ class AiService:
             answer = body.get("answer", "[]")
             answer = _strip_markdown_fence(answer)
             results = _safe_parse_json_array(answer, fallback=[])
-            return results[:5]
+            # 规范化每条结果：Dify 工作流被修改或 LLM 输出异常时防御性兜底，
+            # 避免畸形数据（缺字段/类型错误/非对象元素）导致 Pydantic 校验失败返回 500
+            normalized: list[dict] = []
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                book_id = str(r.get("book_id", ""))
+                if not book_id:
+                    continue
+                try:
+                    score = int(r.get("score", 0))
+                except (TypeError, ValueError):
+                    score = 0
+                normalized.append({
+                    "book_id": book_id,
+                    "title": str(r.get("title") or "未知书名"),
+                    "author": str(r.get("author") or "未知作者"),
+                    "match_reason": str(r.get("match_reason") or "综合匹配"),
+                    "score": max(0, min(score, 100)),
+                })
+            return normalized[:5]
 
         except (httpx.TimeoutException, httpx.ConnectError) as e:
             logger.warning("Dify 搜索请求网络错误: %s，回退为本地搜索", e)
@@ -267,6 +287,23 @@ class AiService:
         return _summary_progress.get(book_id)
 
     @staticmethod
+    def _on_summary_task_done(book_id: str, task: asyncio.Task) -> None:
+        """摘要任务结束后清理内存状态，防止 _summary_progress 条目无限增长。
+
+        成功的任务：done 状态可从 DB（ai_summary 字段）读取，内存条目直接清理；
+        失败/取消的任务：保留条目（携带错误信息），供 GET /summary 返回错误详情。
+        """
+        if book_id in _running_summary_tasks:
+            del _running_summary_tasks[book_id]
+        if task.cancelled():
+            logger.warning("AI 摘要任务被取消: book_id=%s", book_id)
+        elif task.exception() is not None:
+            logger.error("AI 摘要任务异常: book_id=%s — %s", book_id, task.exception())
+        prog = _summary_progress.get(book_id)
+        if prog and prog.get("status") == "done":
+            _summary_progress.pop(book_id, None)
+
+    @staticmethod
     async def start_summary_generation(book_id: str) -> dict:
         """启动摘要生成后台任务。
 
@@ -285,9 +322,12 @@ class AiService:
         _summary_progress[book_id] = {"status": "queued", "error": None}
         loop = asyncio.get_running_loop()
         task = loop.create_task(AiService._run_summary_pipeline(book_id))
+        task.add_done_callback(
+            lambda t: AiService._on_summary_task_done(book_id, t)
+        )
         _running_summary_tasks[book_id] = task
         logger.info("AI 摘要生成任务已创建: book_id=%s", book_id)
-        return {"status": "queued"}
+        return {"status": "queued", "error": None}
 
     @staticmethod
     async def _run_summary_pipeline(book_id: str) -> None:

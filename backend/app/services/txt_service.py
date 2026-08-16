@@ -5,8 +5,10 @@ TXT 生成服务
 """
 
 import logging
-import os
+import re
 from pathlib import Path
+
+from app.utils.filenames import safe_filename_component
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +41,10 @@ class TxtService:
         Returns:
             生成的文件路径
         """
-        safe_title = "".join(c for c in title if c.isalnum() or c in " _-（）()").strip()
-        safe_title = safe_title or "book"  # 标题全部被过滤时使用默认值
-        filename = f"({book_id}){safe_title}-{author}.txt"
+        # 书名与作者均做安全过滤，避免 Windows 非法字符导致写入失败
+        safe_title = safe_filename_component(title, "book")
+        safe_author = safe_filename_component(author, "未知作者")
+        filename = f"({book_id}){safe_title}-{safe_author}.txt"
         filepath = str(self.output_dir / filename)
 
         lines: list[str] = []
@@ -57,8 +60,7 @@ class TxtService:
             ch_content = ch.get("content", "")
 
             # 章节标题：避免重复编号（如原标题已是"第1章 xxx"则不再添加前缀）
-            import re as _re
-            if _re.match(r"第\s*\d+\s*[章节回]", ch_title.strip()):
+            if re.match(r"第\s*\d+\s*[章节回]", ch_title.strip()):
                 lines.append(f"\n{ch_title}\n")
             else:
                 lines.append(f"\n第{i + 1}章  {ch_title}\n")

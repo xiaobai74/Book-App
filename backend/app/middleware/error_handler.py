@@ -53,20 +53,23 @@ async def validation_exception_handler(request: Request, exc: Exception) -> JSON
     """处理 Pydantic 请求体验证错误 → 中文友好提示"""
     from fastapi.exceptions import RequestValidationError
 
-    if isinstance(exc, RequestValidationError):
-        messages = []
-        for err in exc.errors():
-            field = " → ".join(str(loc) for loc in err["loc"])
-            messages.append(f"{field}: {err['msg']}")
-        return JSONResponse(
-            status_code=422,
-            content={
-                "success": False,
-                "data": None,
-                "meta": None,
-                "error": f"请求参数验证失败: {'; '.join(messages)}",
-            },
-        )
+    # 非验证错误时交给通用异常处理器兜底（不返回 None，否则响应体为空）
+    if not isinstance(exc, RequestValidationError):
+        return await general_exception_handler(request, exc)
+
+    messages = []
+    for err in exc.errors():
+        field = " → ".join(str(loc) for loc in err["loc"])
+        messages.append(f"{field}: {err['msg']}")
+    return JSONResponse(
+        status_code=422,
+        content={
+            "success": False,
+            "data": None,
+            "meta": None,
+            "error": f"请求参数验证失败: {'; '.join(messages)}",
+        },
+    )
 
 
 async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
