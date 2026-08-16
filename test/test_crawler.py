@@ -75,6 +75,16 @@ def test_chapter_sort_key():
     assert _chapter_sort_key("001") < _chapter_sort_key("002")
     print("  [PASS] Pure numeric sort OK")
 
+    # 中文数字章节：从小到大
+    assert _chapter_sort_key("第一章 重生") < _chapter_sort_key("第十一章 短命")
+    assert _chapter_sort_key("第九章 夺命") < _chapter_sort_key("第十章 平定")
+    assert _chapter_sort_key("第二十九章 皇陵") < _chapter_sort_key("第三十章 许国")
+    assert _chapter_sort_key("第29章 皇陵") < _chapter_sort_key("第三十章 许国")
+    # 混合阿拉伯数字与中文数字：第一章应排在第11章之前
+    assert _chapter_sort_key("第一章 重生") < _chapter_sort_key("第11章 短命")
+    assert _chapter_sort_key("第9章 xxx") < _chapter_sort_key("第十一章 yyy")
+    print("  [PASS] Chinese numeral chapter sort OK")
+
 
 def test_crawler_import():
     """测试爬虫服务导入"""
@@ -151,6 +161,53 @@ def test_filter_element_removal():
     print("  [PASS] filterElement 整块删除推广元素 OK")
 
 
+def test_chapter_sort_with_volume_reset():
+    """测试卷重置感知排序：多卷小说每卷从第一章重新计数时不打乱顺序"""
+    from app.services.crawler_service import sort_chapter_pairs
+
+    def titles(pairs):
+        return [t for t, _ in pairs]
+
+    # 1) 《诛仙》类：每卷 10 章重新计数，应完全保持原顺序
+    zx = [(f"第{n}章 标题", "u") for n in range(1, 11)]
+    zx += [(f"第{n}章 标题", "u") for n in range(1, 11)]
+    zx += [(f"第{n}章 标题", "u") for n in range(1, 11)]
+    assert titles(sort_chapter_pairs(zx)) == titles(zx)
+    print("  [PASS] Volume reset keeps original order OK")
+
+    # 2) 整页倒序（最新章在前），应纠正为升序
+    rev = [(f"第{n}章 标题", "u") for n in range(31, 0, -1)]
+    sorted_titles = titles(sort_chapter_pairs(rev))
+    assert sorted_titles[0].startswith("第1章")
+    assert sorted_titles[-1].startswith("第31章")
+    print("  [PASS] Fully reversed page corrected to ascending OK")
+
+    # 3) 浮动项（序幕/尾声）固定在原位置
+    with_pro = [("序幕", "u")] + [(f"第{n}章 标题", "u") for n in range(1, 6)]
+    result = sort_chapter_pairs(with_pro)
+    assert result[0][0] == "序幕"
+    assert result[1][0].startswith("第1章")
+    print("  [PASS] Floating prologue pinned OK")
+
+    # 4) 卷标题（第三卷）不参与序号比较，不打断回落判断
+    vol = [("第三卷 青云", "u")] + [(f"第{n}章 标题", "u") for n in range(1, 4)]
+    vol += [("第四卷 迷局", "u")] + [(f"第{n}章 标题", "u") for n in range(1, 4)]
+    assert titles(sort_chapter_pairs(vol)) == titles(vol)
+    print("  [PASS] Volume headers keep order OK")
+
+    # 5) 中文数字与阿拉伯数字混合，回落判断一致
+    mixed = [("第一章 重生", "u"), ("第十章 平定", "u"), ("第11章 短命", "u"), ("第12章 南明", "u")]
+    assert titles(sort_chapter_pairs(mixed)) == titles(mixed)
+    print("  [PASS] Mixed Chinese/Arabic numerals keep order OK")
+
+    # 6) 倒序的「第x卷 第y章」格式也能纠正
+    vrev = [(f"第{v}卷 第{c}章", "u") for v in range(5, 0, -1) for c in range(1, 3)]
+    sorted_v = titles(sort_chapter_pairs(vrev))
+    assert sorted_v[0].startswith("第1卷 第1章")
+    assert sorted_v[-1].startswith("第5卷 第2章")
+    print("  [PASS] Volume-chapter format reversed corrected OK")
+
+
 def run_all():
     tests = [
         test_rule_loading,
@@ -158,6 +215,7 @@ def run_all():
         test_list_sources,
         test_list_searchable_sources,
         test_chapter_sort_key,
+        test_chapter_sort_with_volume_reset,
         test_crawler_import,
         test_search_service_import,
         test_cookies_parsing,

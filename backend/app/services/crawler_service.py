@@ -385,9 +385,8 @@ class CrawlerService:
                             full_url = urljoin(source_url, href)
                             pairs.append((key, full_url))
 
-        # 按章节序号排序
-        pairs.sort(key=lambda x: _chapter_sort_key(x[0]))
-        return pairs
+        # 章节排序（保持卷内顺序，纠正整页倒序）
+        return sort_chapter_pairs(pairs)
 
     def _parse_chapter_list_generic(
         self,
@@ -448,7 +447,7 @@ class CrawlerService:
             full_url = urljoin(source_url, href)
             result.append((key, full_url))
 
-        result.sort(key=lambda x: _chapter_sort_key(x[0]))
+        result = sort_chapter_pairs(result)
         return result
 
     async def _fetch_toc_pages(
@@ -533,7 +532,7 @@ class CrawlerService:
             if key not in seen:
                 seen.add(key)
                 deduped.append((key, url))
-        deduped.sort(key=lambda x: _chapter_sort_key(x[0]))
+        deduped = sort_chapter_pairs(deduped)
 
         return deduped
 
@@ -1032,14 +1031,63 @@ class CrawlerService:
 # 辅助函数
 # ═══════════════════════════════════════════════════════════
 
+_CN_NUM = {
+    "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}
+
+# 可出现在章节序号中的中文数字字符（含位权字符 十/百/千）
+_CN_CHAPTER_NUM_RE = r"[0-9零一二三四五六七八九十百千两]+"
+
+
+def _cn_to_int(cn: str) -> int | None:
+    """中文数字转阿拉伯数字。
+
+    例如 '十一' → 11，'一百二十' → 120，'29' → 29。
+    无法转换（含不支持字符）时返回 None。
+    """
+    if not cn:
+        return None
+    if cn.isdigit():
+        return int(cn)
+    if any(ch not in _CN_NUM and ch not in "十百千" for ch in cn):
+        return None
+    total = 0
+    section = 0
+    for ch in cn:
+        if ch in _CN_NUM:
+            section = _CN_NUM[ch]
+        elif ch == "十":
+            total += (section or 1) * 10
+            section = 0
+        elif ch == "百":
+            total += (section or 1) * 100
+            section = 0
+        elif ch == "千":
+            total += (section or 1) * 1000
+            section = 0
+    return total + section
+
+
 def _chapter_sort_key(title: str) -> tuple:
-    """从章节标题中提取排序键。"""
-    # "第29卷 第18章" → (29, 18)
-    m = re.search(r"第\s*(\d+)\s*[卷章节回]\s*(?:第\s*(\d+)\s*[章节回])?", title)
+    """从章节标题中提取排序键（支持阿拉伯数字与中文数字）。"""
+    # "第29卷 第18章" / "第二十九卷 第十八章" → (29, 18)
+    m = re.search(
+        rf"第\s*({_CN_CHAPTER_NUM_RE})\s*[卷]\s*(?:第\s*({_CN_CHAPTER_NUM_RE})\s*[章节回])?",
+        title,
+    )
     if m:
-        vol = int(m.group(1))
-        ch = int(m.group(2)) if m.group(2) else 0
-        return (0, vol, ch)
+        vol = _cn_to_int(m.group(1))
+        if vol is not None:
+            ch = _cn_to_int(m.group(2)) if m.group(2) else 0
+            return (0, vol, ch)
+
+    # "第11章 xxx" / "第十一章 xxx" → num
+    m = re.search(rf"第\s*({_CN_CHAPTER_NUM_RE})\s*[章节回]", title)
+    if m:
+        num = _cn_to_int(m.group(1))
+        if num is not None:
+            return (0, num, 0)
 
     # "29. 标题" 或 "29、标题" 开头
     m = re.search(r"^\s*(\d+)\s*[\.、\s]", title)
@@ -1057,6 +1105,79 @@ def _chapter_sort_key(title: str) -> tuple:
         return (3, int(m.group(1)), 0)
 
     return (4, 0, 0)
+
+
+# 卷标题（如「第三卷」「第五卷 沧海」）— 其后不再紧跟「第」字
+# （「第5卷 第1章」这类卷-章组合不是卷标题）
+_VOLUME_HEADER_RE = re.compile(rf"^\s*第\s*{_CN_CHAPTER_NUM_RE}\s*[卷集部](?!\s*第)")
+
+
+def _chapter_cmp_value(key: tuple) -> tuple | None:
+    """提取可用于顺序比较的数值（无可靠数值时返回 None）。
+
+    类别 0-2 的键携带真实章节序号；类别 3（正文含任意数字，如「番外2024」）
+    不可靠，视作无序号，避免误判顺序回落。
+    """
+    if key[0] == 0:
+        return (key[1], key[2])
+    if key[0] in (1, 2):
+        return (key[1],)
+    return None
+
+
+def sort_chapter_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """对章节列表排序：保持卷内顺序，仅纠正目录页整体倒序。
+
+    背景：源站目录页的 DOM 顺序通常就是作者写作顺序，但也存在两类
+    需要特殊处理的情况：
+    1. 多卷小说每卷都从「第一章」重新计数（如《诛仙》），标题序号会
+       周期性回落 — 这时的"回落"是正常的，不应重排；
+    2. 个别源站目录按更新时间倒序（最新章在前），整页都是倒序。
+
+    策略：
+    - 把列表按「序号回落」切分成若干段（回落点 = 新一卷/新段起点）；
+    - 段内保持原始顺序（写作顺序）；
+    - 段间按各段最小序号稳定升序排列（可纠正整段倒序，多卷书各卷
+      段的最小序号相同，稳定排序保持原有卷序）；
+    - 无可排序值的条目（序幕、尾声、卷标题等）不参与回落判断，
+      固定在原位置。
+    """
+    if len(pairs) < 2:
+        return list(pairs)
+
+    # 计算每个条目的 (排序键, 比较值, 是否卷标题)
+    entries: list[tuple[tuple, tuple | None, bool, str, str]] = []
+    for title, url in pairs:
+        key = _chapter_sort_key(title)
+        entries.append((key, _chapter_cmp_value(key), bool(_VOLUME_HEADER_RE.match(title)), title, url))
+
+    # 按「比较值回落」切分段：两侧都是带序号且非卷标题的条目时，
+    # 当前值小于前一个值视为进入新段
+    segments: list[list[tuple[tuple, tuple | None, bool, str, str]]] = []
+    for e in entries:
+        if segments:
+            prev = segments[-1][-1]
+            prev_val, prev_hdr = prev[1], prev[2]
+            curr_val, curr_hdr = e[1], e[2]
+            if (
+                prev_val is not None and curr_val is not None
+                and not prev_hdr and not curr_hdr
+                and curr_val < prev_val
+            ):
+                segments.append([e])
+                continue
+            segments[-1].append(e)
+        else:
+            segments.append([e])
+
+    # 段间按段内最小比较值升序（无可比较值的段视为 0，保持相对位置）
+    def _segment_min(seg):
+        vals = [e[1] for e in seg if e[1] is not None]
+        return min(vals) if vals else (0,)
+
+    segments.sort(key=_segment_min)
+
+    return [(e[3], e[4]) for seg in segments for e in seg]
 
 
 # 全局单例（向后兼容）

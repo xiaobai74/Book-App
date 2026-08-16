@@ -53,7 +53,7 @@ GIT_TERMINAL_PROMPT=0 git push origin master
 - **`frontend/`** — Vue 3 前端工程（组件、路由、状态管理、API 封装）
 - **`backend/`** — Python FastAPI 后端（路由、模型、服务、中间件）
   - `backend/app/models/` — ORM 模型：User、Book、Chapter、RefreshToken、CrawlSource、ReadingProgress（v1.2 新增）
-  - `backend/app/services/` — 服务层：crawler_service（规则驱动爬虫引擎）、search_service（外部源站搜索）、crawl_manager（后台抓取流水线）、epub_service、txt_service、book_service（含标记/阅读进度逻辑 + 双字段搜索，v1.2 扩展）、ai_service（AI 语义搜索/摘要，v1.3 新增）、crawl_source_service（自定义源站 CRUD）
+  - `backend/app/services/` — 服务层：crawler_service（规则驱动爬虫引擎 + 卷重置感知章节排序）、search_service（外部源站搜索）、crawl_manager（后台抓取流水线）、epub_service、txt_service、book_service（含标记/阅读进度逻辑 + 双字段搜索，v1.2 扩展）、ai_service（AI 语义搜索/摘要，v1.3 新增）、crawl_source_service（自定义源站 CRUD）
   - `backend/app/api/v1/ai.py` — AI 功能路由（v1.3 新增）：语义搜索、摘要生成
   - `backend/rules/` — 规则引擎 + main.json（11 个内置源站规则）+ custom_sources.json（用户自定义规则）
   - `backend/rules/rule_engine.py` — 规则加载、域名匹配、通用回退规则生成、自定义规则持久化
@@ -127,6 +127,16 @@ v1.3 已实现并合入 master，新增 AI 语义搜索：
 - 新增 `GET /api/v1/ai/summary/{book_id}` — 获取 AI 摘要
 - books 表新增 `ai_summary` 和 `ai_summary_at` 字段
 - `backend/migrations/add_ai_summary.sql`：AI 摘要字段迁移脚本
+
+## v1.3.1 变更（✅ 已完成）
+
+v1.3.1 修复章节排序问题（`backend/app/services/crawler_service.py`）：
+
+- `_chapter_sort_key` 支持中文数字章节号：「第一章」与「第1章」排序等价
+- 新增 `sort_chapter_pairs` 卷重置感知排序：按章节序号回落点切段（回落 = 新一卷开始），段内保持源站原始顺序，段间按最小序号稳定升序 — 解决多卷小说（如《诛仙》）每卷从「第一章」重新计数导致章节被打乱的问题
+- 「序幕」「尾声」等无序号条目固定在原位置；「第x卷 第y章」卷-章组合与纯卷标题正确区分
+- 章节列表解析的三处排序调用（规则解析 / 通用解析 / 目录翻页去重）统一改用 `sort_chapter_pairs`
+- `test/test_crawler.py` 新增 `test_chapter_sort_with_volume_reset` 覆盖 6 类排序场景
 
 ## 自定义约束
 
