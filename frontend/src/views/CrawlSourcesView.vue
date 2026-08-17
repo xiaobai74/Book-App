@@ -58,11 +58,10 @@
       </div>
     </section>
 
-    <!-- 添加 / 编辑对话框 -->
+    <!-- 添加 / 编辑对话框（v1.5：去掉固定宽度，全局小屏规则自适应） -->
     <el-dialog
       v-model="showEditDialog"
       :title="isEditing ? '编辑源站规则' : '添加源站规则'"
-      width="560px"
       @opened="resetEditForm"
     >
       <el-form ref="editFormRef" :model="editForm" :rules="editRules" label-position="top" @submit.prevent="handleSave">
@@ -86,7 +85,7 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <div style="display:flex;justify-content:space-between;align-items:center">
+        <div class="dialog-footer">
           <el-button
             :loading="testingRule"
             :disabled="!editForm.rule_json.trim()"
@@ -105,14 +104,14 @@
 
       <!-- 测试结果 -->
       <div v-if="testResult !== null" class="test-result" style="margin-top:12px;padding:12px;border-radius:6px;background:var(--bg);font-size:13px">
-        <div v-if="testResult.success" style="color:var(--accent-ice)">
+        <div v-if="testResult.success" style="color:var(--success)">
           ✓ 测试通过！成功解析 {{ testResult.chapter_count }} 章
           <ul v-if="testResult.sample_chapters.length" style="margin-top:6px;list-style:decimal;margin-left:20px">
             <li v-for="(ch, i) in testResult.sample_chapters" :key="i">{{ ch.title }}</li>
             <li v-if="testResult.chapter_count > 5" style="color:var(--muted)">... 共 {{ testResult.chapter_count }} 章</li>
           </ul>
         </div>
-        <div v-else style="color:#f56c6c">
+        <div v-else style="color:var(--danger)">
           ✗ 测试失败：{{ testResult.error }}
         </div>
       </div>
@@ -123,7 +122,8 @@
       <div class="help-box">
         <h3>规则配置说明</h3>
         <p>规则以 JSON 格式编写，支持 CSS 选择器。常用字段：</p>
-        <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px">
+        <div class="scroll-x">
+          <table class="help-table" style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px">
           <thead>
             <tr style="text-align:left;border-bottom:1px solid var(--border)">
               <th style="padding:6px 8px">字段</th>
@@ -159,6 +159,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
         <p style="margin-top:8px;font-size:11px;color:var(--muted)">
           如果不配置这些字段或留空，系统将使用内置的通用解析策略。
         </p>
@@ -341,7 +342,7 @@ function confirmDelete(source: CrawlSource) {
 .lead { font-size: 14px; color: var(--muted); }
 
 .source-card {
-  background: var(--card);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px 20px;
@@ -359,11 +360,35 @@ function confirmDelete(source: CrawlSource) {
 .help-box h3 {
   font-size: 16px;
   font-weight: 600;
-  color: var(--text);
+  color: var(--fg);
   margin-bottom: 8px;
 }
 
 .test-result {
   margin-bottom: 12px;
+}
+
+/* ── v1.5 移动端适配 ────────────────────────────── */
+.dialog-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+@media (max-width: 640px) {
+  .source-card {
+    padding: 14px;
+  }
+  .help-box {
+    padding: 16px;
+  }
+  /* 规则说明表格设最小宽度，在 .scroll-x 容器内横向滚动 */
+  .help-table {
+    min-width: 520px;
+  }
+  .dialog-footer {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
 }
 </style>

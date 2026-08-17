@@ -2,10 +2,10 @@
      小说管理App · 书籍封面组件（大尺寸）
      ═══════════════════════════════════════════════════════════════ -->
 <template>
-  <div :class="['book-cover', coverColor]" :style="coverStyle">
-    <span class="cover-spine"></span>
-    <span class="cover-title">{{ title }}</span>
-    <span class="cover-author">{{ author }}</span>
+  <div :class="['book-cover', coverColor]" :style="coverStyle" role="img" :aria-label="`《${title}》封面`">
+    <span class="cover-spine" aria-hidden="true"></span>
+    <span class="cover-title" aria-hidden="true">{{ title }}</span>
+    <span class="cover-author" aria-hidden="true">{{ author }}</span>
   </div>
 </template>
 

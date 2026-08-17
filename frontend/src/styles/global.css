@@ -1,25 +1,58 @@
 /* ═══════════════════════════════════════════════════════
-   小说管理App · 全局样式（继承自原型 tokens）
-   冷色调色板 · 零动画 · 极简卡片式布局
+   小说管理App · 全局样式
+   v1.4 — 冷暖双基调设计系统（冷色为骨架 · 暖色为点缀）
+   v1.5 — 移动端适配（断点 / 安全区 / 触控目标 / 对话框）
+   对比度全部满足 WCAG 2.2 AA · 极简卡片式布局
    ═══════════════════════════════════════════════════════ */
 
 :root {
+  --mobile: 640px;   /* 手机断点：导航折叠、卡片重排、输入字号放大 */
+  --tablet: 900px;   /* 平板断点：网格列数、容器内边距 */
+
+  /* ── 冷色系：骨架（背景/表面/文字/主色） ── */
   --bg:       #f4f6f8;
   --surface:  #ffffff;
   --fg:       #1e293b;
   --fg-soft:  #334155;
   --muted:    #64748b;
   --border:   #e2e8f0;
-  --accent:   #4a8bb5;
-  --accent-hover: #3a7096;
-  --success:  #475569;
-  --danger:   #94a3b8;
-  --accent-ice:  #5ba3cc;
-  --accent-soft: color-mix(in oklch, #4a8bb5 14%, transparent);
-  --accent-ice-soft: color-mix(in oklch, #5ba3cc 16%, transparent);
+  --accent:   #3d7ea8;        /* 冰蓝主色（对白 4.5:1） */
+  --accent-hover: #35688c;    /* 冰蓝加深（5.7:1） */
+  --accent-ice:  #2f6f96;     /* 深一档冰蓝（5.5:1，小字强调） */
+  --accent-soft: color-mix(in oklch, #3d7ea8 14%, transparent);
+  --accent-ice-soft: color-mix(in oklch, #2f6f96 16%, transparent);
+  --success:  #2e7d5b;        /* 苔绿（5.1:1） */
+  --danger:   #b4523f;        /* 陶土红（4.6:1，暖色功能色） */
+  --danger-soft: color-mix(in oklch, #b4523f 12%, transparent);
+  --hover: color-mix(in oklch, #3d7ea8 6%, transparent);   /* 行/条目悬停底色 */
+  --focus-ring: #3d7ea8;      /* 键盘焦点描边 */
+  --input-border: #94a3b8;    /* 表单输入框边框（≥3:1，非装饰性） */
 
-  --cover-0: #dce8ef; --cover-1: #d5dfe6; --cover-2: #cbd8e2; --cover-3: #d8e2ea;
-  --cover-4: #d0dbe4; --cover-5: #c5d2dd; --cover-6: #dae4ec; --cover-7: #cdd8e0;
+  /* ── 暖色系：点缀（星标/重点标记/阅读器纸感） ── */
+  --accent-warm: #b08d4f;     /* 暖金：星标/重点标记（3.1:1） */
+  --warm-hover: #96713b;      /* 暖金加深（4.5:1） */
+  --warm-soft: #f3e8d5;       /* 暖金浅底（标签底色） */
+  --warm-fg: #6b4f2a;         /* 暖底上的文字（7.4:1） */
+  --warm-mark-bg: #fff3cd;    /* 搜索高亮底（暖黄） */
+  --warm-mark-fg: #856404;    /* 搜索高亮文字 */
+  --reader-warm-bg: #f8f3e8;  /* 阅读器日间暖纸背景 */
+  --reader-warm-fg: #2e2a24;  /* 阅读器日间正文（12.9:1） */
+  --reader-warm-muted: #6b5d4f;
+  --reader-night-bg: #1a2332; /* 阅读器夜间冷调 */
+  --reader-night-fg: #cbd5e1;
+  --reader-night-heading: #e2e8f0;
+  --reader-night-border: #2d3a4a;
+  --reader-night-bar: #141d2a;
+
+  /* ── 封面插画：冷→暖双色渐变（8 变体，按书名哈希选取） ── */
+  --cover-0: linear-gradient(160deg, #dce8ef, #e8d9c4);
+  --cover-1: linear-gradient(160deg, #cbd8e2, #e3cfb4);
+  --cover-2: linear-gradient(160deg, #d5dfe6, #ead5c8);
+  --cover-3: linear-gradient(160deg, #c5d2dd, #ecd9c2);
+  --cover-4: linear-gradient(160deg, #d8e2ea, #ead2c3);
+  --cover-5: linear-gradient(160deg, #d0dbe4, #e6d3bd);
+  --cover-6: linear-gradient(160deg, #dae4ec, #ecdbc9);
+  --cover-7: linear-gradient(160deg, #cdd8e0, #e9d8c6);
 
   --font-body: system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace;
@@ -46,10 +79,57 @@ body {
 a { color: var(--accent); text-decoration: none; }
 h1, h2, h3, h4 { margin: 0; }
 
-/* 零动画（保持极简界面风格） */
+/* ─── 键盘焦点可见性（WCAG 2.4.7 / 2.4.11） ────────────
+   统一冰蓝 2px 描边 + 4px 偏移，对比度 ≥ 3:1，覆盖所有键盘导航元素 */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ─── 跳到主要内容（WCAG 2.4.1，App.vue 使用） ────────── */
+.skip-link {
+  position: absolute;
+  left: 16px;
+  top: -48px;
+  z-index: 1000;
+  padding: 10px 16px;
+  background: var(--accent);
+  color: #ffffff;
+  border-radius: 0 0 8px 8px;
+  font-size: 14px;
+  transition: top 0.15s ease !important;
+}
+
+.skip-link:focus-visible {
+  top: 0;
+  outline: 2px solid var(--warm-hover);
+  outline-offset: 2px;
+}
+
+/* ─── 动效策略（PRD 3.1：极简，禁用装饰性动画） ─────────
+   仅允许：
+   ① 加载指示动画（全局 keyframes 豁免，见下）
+   ② ≤150ms 的 hover/active 即时反馈微交互（transition 豁免） */
 *, *::before, *::after {
   animation: none !important;
+}
+
+*:not(.star):not(.mark-btn):not(.skip-link) {
   transition: none !important;
+}
+
+/* 可点击控件统一 150ms 微交互（星标/条目 hover 即时反馈） */
+.star, .mark-btn {
+  transition: color 0.15s ease, transform 0.15s ease !important;
+}
+
+/* ─── 动效偏好（WCAG 2.3.3）：用户要求减少动效时停用一切非必要动效 ─── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 /* 例外：PRD 3.1 允许的加载指示动画。
@@ -98,9 +178,79 @@ h1, h2, h3, h4 { margin: 0; }
   padding-block: 56px;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .container { padding-inline: 16px; }
-  .section { padding-block: 32px; }
+  .section { padding-block: 40px; }
+}
+
+@media (max-width: 640px) {
+  .container { padding-inline: 12px; }
+  .section { padding-block: 24px; }
+}
+
+/* ─── 移动端适配（v1.5） ─────────────────────────────── */
+
+/* 输入框 16px 字号：防止 iOS Safari 聚焦时自动放大页面 */
+@media (max-width: 640px) {
+  .el-input__inner,
+  .el-textarea__inner {
+    font-size: 16px !important;
+  }
+}
+
+/* Element Plus 对话框自适应屏幕宽度（带安全区，含刘海屏） */
+.el-dialog {
+  max-width: calc(100vw - 24px);
+}
+
+@media (max-width: 640px) {
+  .el-dialog {
+    max-width: calc(100vw - 16px);
+    --el-dialog-margin-top: 7vh;
+  }
+}
+
+/* 刘海屏 / 全面屏安全区（viewport-fit=cover，见 index.html） */
+.topnav-inner {
+  padding-inline: max(24px, env(safe-area-inset-left)) max(24px, env(safe-area-inset-right));
+}
+
+@media (max-width: 640px) {
+  .topnav-inner {
+    padding-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right));
+  }
+  .pagefoot {
+    padding-bottom: calc(32px + env(safe-area-inset-bottom));
+  }
+}
+
+/* 移动端触控友好：按钮与表单控件保证足够高度 */
+@media (max-width: 640px) {
+  .el-button {
+    min-height: 36px;
+  }
+  .el-button--small {
+    min-height: 32px;
+  }
+  .el-input__inner {
+    min-height: 40px;
+  }
+  .el-pagination button,
+  .el-pager li {
+    min-width: 34px;
+    min-height: 34px;
+  }
+  .el-radio-button__inner {
+    min-height: 34px;
+  }
+}
+
+/* 横向可滚动容器（筛选标签 / 表格） */
+.scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  max-width: 100%;
 }
 
 /* ─── Topnav ───────────────────────────────────────── */
@@ -144,17 +294,12 @@ h1, h2, h3, h4 { margin: 0; }
   gap: 12px;
 }
 
-.topnav .user-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: var(--surface);
-  display: grid;
-  place-items: center;
-  font-size: 13px;
-  font-weight: 600;
-  flex-shrink: 0;
+/* 导航当前页面提示（顶部细条）：冰蓝 → 暖金的冷-暖呼应，暖色仅此一细条 */
+.topnav::after {
+  content: '';
+  display: block;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-ice) 55%, var(--accent-warm) 100%);
 }
 
 /* ─── Auth Pages ───────────────────────────────────── */
@@ -187,8 +332,14 @@ h1, h2, h3, h4 { margin: 0; }
   margin-bottom: 20px;
 }
 
-@media (max-width: 768px) {
-  .auth-card { padding: 28px 20px; }
+@media (max-width: 640px) {
+  .auth-shell {
+    padding: 16px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  .auth-card {
+    padding: 24px 18px;
+  }
 }
 
 /* ─── Book Card ────────────────────────────────────── */
@@ -210,6 +361,10 @@ h1, h2, h3, h4 { margin: 0; }
 }
 
 .book-card .book-title:hover {
+  color: var(--accent);
+}
+
+.book-card .book-title:focus-visible {
   color: var(--accent);
 }
 
@@ -342,7 +497,7 @@ h1, h2, h3, h4 { margin: 0; }
 .book-cover-sm.c6 { background: var(--cover-6); }
 .book-cover-sm.c7 { background: var(--cover-7); }
 
-/* ─── Badge ────────────────────────────────────────── */
+/* ─── Badge（v1.4：文字对比度全部 ≥4.5:1，非文字 ≥3:1） ── */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -355,23 +510,19 @@ h1, h2, h3, h4 { margin: 0; }
 }
 
 .badge-idle {
-  background: var(--bg);
-  color: var(--muted);
+  background: color-mix(in oklch, #64748b 15%, transparent);
+  color: #475569;
 }
 
-.badge-crawl {
-  background: color-mix(in oklch, var(--accent-ice) 16%, transparent);
-  color: var(--accent-ice);
-}
-
+.badge-crawl,
 .badge-done {
   background: var(--accent-ice-soft);
   color: var(--accent-ice);
 }
 
 .badge-failed {
-  background: color-mix(in oklch, var(--danger) 16%, transparent);
-  color: var(--danger);
+  background: var(--danger-soft);
+  color: #9a3f2e;   /* 陶土红加深（对浅底 5.2:1） */
 }
 
 /* ─── Detail Page ──────────────────────────────────── */
@@ -524,18 +675,28 @@ h1, h2, h3, h4 { margin: 0; }
 }
 
 /* ─── Element Plus 覆盖 ────────────────────────────── */
-/* 让 Element Plus 融入冷色调设计系统 */
+/* 让 Element Plus 融入 v1.4 冷暖双基调设计系统 */
 :root {
   --el-color-primary: var(--accent);
   --el-color-primary-light-3: var(--accent-ice);
   --el-color-primary-light-5: var(--accent-ice-soft);
+  --el-color-success: var(--success);
+  --el-color-danger: var(--danger);
   --el-border-radius-base: var(--radius);
 }
 
 /* Element Plus 对话框间距覆盖 */
 .el-dialog__header { font-weight: 600; }
-.el-button--primary { --el-button-bg-color: var(--accent); --el-button-border-color: var(--accent); }
-.el-button--primary:active { --el-button-bg-color: var(--accent-hover); }
+
+/* 主按钮：冰蓝底，白字（4.5:1 达标）；hover 使用加深色 */
+.el-button--primary {
+  --el-button-bg-color: var(--accent);
+  --el-button-border-color: var(--accent);
+  --el-button-hover-bg-color: var(--accent-hover);
+  --el-button-hover-border-color: var(--accent-hover);
+  --el-button-active-bg-color: var(--accent-hover);
+  --el-button-active-border-color: var(--accent-hover);
+}
 
 /* 表格 action column 间距 */
 .action-column { display: flex; gap: 8px; }

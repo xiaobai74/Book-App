@@ -41,12 +41,6 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
-      path: '/settings',
-      name: 'Settings',
-      component: () => import('@/views/SettingsView.vue'),
-      meta: { requiresAuth: true }
-    },
-    {
       path: '/crawl-sources',
       name: 'CrawlSources',
       component: () => import('@/views/CrawlSourcesView.vue'),

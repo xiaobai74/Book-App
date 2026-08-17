@@ -6,7 +6,10 @@
     <!-- 顶部导航栏 -->
     <header class="reader-header">
       <div class="reader-header-left">
-        <el-button text @click="goBack">← 返回详情</el-button>
+        <el-button text class="reader-back" @click="goBack">
+          <span class="reader-back-text">← 返回详情</span>
+          <span class="reader-back-icon" aria-hidden="true">←</span>
+        </el-button>
       </div>
       <div class="reader-header-center">
         <span class="chapter-label">第 {{ currentIndex }} 章</span>
@@ -57,6 +60,22 @@
         <h2 class="reader-chapter-heading">{{ chapter?.title }}</h2>
         <div class="reader-text" v-html="renderedContent"></div>
       </div>
+
+      <!-- 移动端点击翻页热区（v1.5 新增） -->
+      <button
+        class="tap-zone tap-zone-prev"
+        type="button"
+        :aria-label="prevAriaLabel"
+        :disabled="currentIndex <= 1"
+        @click="prevChapter"
+      ></button>
+      <button
+        class="tap-zone tap-zone-next"
+        type="button"
+        :aria-label="nextAriaLabel"
+        :disabled="currentIndex >= totalChapters"
+        @click="nextChapter"
+      ></button>
     </main>
 
     <!-- 底部导航栏 -->
@@ -78,12 +97,13 @@
       </el-button>
     </footer>
 
-    <!-- 目录侧边抽屉 -->
+    <!-- 目录侧边抽屉（v1.5：小屏宽度贴屏） -->
     <el-drawer
       v-model="tocVisible"
       title="章节目录"
       direction="ltr"
       size="320px"
+      class="reader-toc-drawer"
     >
       <div v-if="tocLoading" style="text-align:center;padding:24px">
         <div class="loading-bar"></div>
@@ -266,6 +286,14 @@ function nextChapter() {
   fetchChapter()
 }
 
+// 移动端点击翻页热区说明（v1.5）
+const prevAriaLabel = computed(() =>
+  currentIndex.value > 1 ? '上一章' : '已是第一章'
+)
+const nextAriaLabel = computed(() =>
+  currentIndex.value < totalChapters.value ? '下一章' : '已是最后一章'
+)
+
 function goBack() {
   router.push(`/detail/${bookId.value}`)
 }
@@ -315,38 +343,35 @@ watch(() => route.params.chapterIndex, (newVal) => {
 </script>
 
 <style scoped>
-/* ── 根容器 ──────────────────────────────────── */
+/* ── 根容器 ────────────────────────────────────
+   v1.4：日间 = 暖纸背景（冷调界面中的暖色"纸张"区）；
+         夜间 = 冷调深蓝黑。令牌统一在 global.css 中定义 */
 .reader-root {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  background: var(--bg);
-  color: var(--text);
-  transition: background 0.3s, color 0.3s;
+  background: var(--reader-warm-bg);
+  color: var(--reader-warm-fg);
 }
 
-/* ── 夜间模式 ──────────────────────────────────── */
+/* ── 夜间模式（冷调） ───────────────────────────── */
 .reader-root.night-mode {
-  --reader-bg: #1a2332;
-  --reader-text: #cbd5e1;
-  --reader-heading: #e2e8f0;
-  --reader-border: #2d3a4a;
-  background: var(--reader-bg);
-  color: var(--reader-text);
+  background: var(--reader-night-bg);
+  color: var(--reader-night-fg);
 }
 
 .night-mode .reader-header,
 .night-mode .reader-footer {
-  background: #141d2a;
-  border-color: var(--reader-border);
+  background: var(--reader-night-bar);
+  border-color: var(--reader-night-border);
 }
 
 .night-mode .reader-content {
-  color: var(--reader-text);
+  color: var(--reader-night-fg);
 }
 
 .night-mode .reader-chapter-heading {
-  color: var(--reader-heading);
+  color: var(--reader-night-heading);
 }
 
 /* ── 顶部导航栏 ──────────────────────────────────── */
@@ -382,9 +407,13 @@ watch(() => route.params.chapterIndex, (newVal) => {
 
 .chapter-label {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--reader-warm-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+.night-mode .chapter-label {
+  color: var(--muted);
 }
 
 .chapter-title-text {
@@ -416,7 +445,7 @@ watch(() => route.params.chapterIndex, (newVal) => {
   font-weight: 700;
   margin-bottom: 32px;
   text-align: center;
-  color: var(--text);
+  color: var(--reader-warm-fg);
 }
 
 .reader-text {
@@ -445,9 +474,13 @@ watch(() => route.params.chapterIndex, (newVal) => {
 
 .reader-progress {
   font-size: 13px;
-  color: var(--muted);
+  color: var(--reader-warm-muted);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+.night-mode .reader-progress {
+  color: var(--muted);
 }
 
 /* ── 目录 ──────────────────────────────────── */
@@ -464,7 +497,6 @@ watch(() => route.params.chapterIndex, (newVal) => {
   padding: 10px 12px;
   border-radius: 6px;
   cursor: pointer;
-  transition: background 0.15s;
 }
 
 .toc-item:hover {
@@ -472,12 +504,12 @@ watch(() => route.params.chapterIndex, (newVal) => {
 }
 
 .toc-active {
-  background: var(--accent-ice);
+  background: var(--accent);
   color: #fff;
 }
 
 .toc-active:hover {
-  background: var(--accent-ice);
+  background: var(--accent);
 }
 
 .toc-num {
@@ -488,7 +520,7 @@ watch(() => route.params.chapterIndex, (newVal) => {
 }
 
 .toc-active .toc-num {
-  color: rgba(255,255,255,0.7);
+  color: rgba(255, 255, 255, 0.78);
 }
 
 .toc-title {
@@ -498,16 +530,81 @@ watch(() => route.params.chapterIndex, (newVal) => {
   text-overflow: ellipsis;
 }
 
+/* ── 移动端点击翻页热区（v1.5：默认隐藏） ── */
+.tap-zone {
+  display: none;
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 60%;
+  width: 33%;
+  max-width: 120px;
+  z-index: 5;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.tap-zone:disabled {
+  cursor: default;
+}
+.tap-zone-prev { left: 0; }
+.tap-zone-next { right: 0; }
+
+/* 移动端返回按钮：桌面显示文字，≤640px 仅显示箭头图标 */
+.reader-back-icon {
+  display: none;
+}
+
 /* ── 响应式 ──────────────────────────────────── */
 @media (max-width: 640px) {
   .reader-body {
     padding: 20px 14px 36px;
   }
+  /* 含刘海屏安全区（global.css 同值被本 scoped 规则覆盖，这里显式带上） */
   .reader-header {
-    padding: 8px 12px;
+    padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
   }
   .reader-footer {
-    padding: 10px 14px;
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  }
+
+  /* 头部文字压缩，保证一行放下 */
+  .reader-header { gap: 4px; }
+  .reader-header-left,
+  .reader-header-right {
+    gap: 0;
+  }
+  .chapter-title-text {
+    max-width: 160px;
+    font-size: 13px;
+  }
+
+  /* 返回按钮图标化 */
+  .reader-back-text { display: none; }
+  .reader-back-icon {
+    display: inline;
+    font-size: 16px;
+  }
+  .reader-back { min-height: 36px; padding: 6px 8px; }
+
+  /* 触控翻页热区 */
+  .tap-zone { display: block; }
+
+  /* 目录条目触控友好 */
+  .toc-item {
+    min-height: 44px;
+    padding: 10px 8px;
+  }
+}
+</style>
+
+<!-- 全局样式（非 scoped，因为 el-drawer 渲染在 body 下） -->
+<style>
+/* v1.5：小屏目录抽屉贴屏，不遮挡正文 */
+@media (max-width: 640px) {
+  .reader-toc-drawer {
+    width: min(320px, 85vw) !important;
   }
 }
 </style>

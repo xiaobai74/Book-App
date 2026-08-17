@@ -267,8 +267,13 @@ function escapeHtml(str: string): string {
 .results {
   max-height: 320px;
   overflow-y: auto;
-  margin: 0 -20px;
-  padding: 0 20px;
+}
+
+/* 移动端：结果区上限随视口收缩，避免小屏滚动过深 */
+@media (max-width: 640px) {
+  .results {
+    max-height: min(320px, 55vh);
+  }
 }
 
 .section-label {
@@ -323,7 +328,7 @@ function escapeHtml(str: string): string {
 }
 
 .mark {
-  color: #c9a96e;
+  color: var(--accent-warm);
   font-size: 14px;
   flex-shrink: 0;
 }
@@ -336,8 +341,8 @@ function escapeHtml(str: string): string {
 
 /* ── 高亮匹配 ──────────────────────────────────────── */
 :deep(.palette-highlight) {
-  background: #fff3cd;
-  color: #856404;
+  background: var(--warm-mark-bg);
+  color: var(--warm-mark-fg);
   padding: 0 1px;
   border-radius: 2px;
 }
@@ -373,7 +378,7 @@ function escapeHtml(str: string): string {
 }
 </style>
 
-<!-- 全局样式（非 scoped，因为 el-dialog 渲染在 body 下） -->
+/* ── 全局样式（非 scoped，因为 el-dialog 渲染在 body 下） ── */
 <style>
 .command-palette-dialog {
   border-radius: 12px;
@@ -386,5 +391,15 @@ function escapeHtml(str: string): string {
 
 .command-palette-dialog .el-dialog__body {
   padding: 16px 20px;
+}
+
+/* ── 移动端：面板宽度贴屏 ── */
+@media (max-width: 640px) {
+  .command-palette-dialog {
+    width: calc(100% - 16px) !important;
+  }
+  .command-palette-dialog .el-dialog__body {
+    padding: 12px;
+  }
 }
 </style>

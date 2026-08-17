@@ -12,9 +12,9 @@
           <h2 style="font-size:clamp(22px,3vw,28px);font-weight:600">
             {{ hasSearched ? `搜索："${currentQ}"` : '搜索小说' }}
           </h2>
-          <div style="display:flex;align-items:center;gap:8px;flex:0 1 480px">
+          <div class="search-controls" style="display:flex;align-items:center;gap:8px;flex:0 1 480px">
             <!-- 搜索标签切换 -->
-            <el-radio-group v-model="searchMode" size="small" style="flex-shrink:0">
+            <el-radio-group v-model="searchMode" size="small" class="mode-group" style="flex-shrink:0">
               <el-radio-button value="shelf">书架内</el-radio-button>
               <el-radio-button value="web">全网搜索</el-radio-button>
             </el-radio-group>
@@ -25,6 +25,7 @@
               placeholder="全部源站"
               size="small"
               clearable
+              class="source-select"
               style="width:140px;flex-shrink:0"
             >
               <el-option label="全部源站" :value="undefined" />
@@ -40,10 +41,11 @@
               :placeholder="searchMode === 'web' ? '输入书名或作者，全网搜索…' : '在书架中按书名搜索…'"
               :prefix-icon="Search"
               clearable
+              class="query-input"
               @keyup.enter="doSearch"
             >
               <template #append>
-                <el-button :icon="Search" :loading="isSearching" @click="doSearch" />
+                <el-button :icon="Search" :loading="isSearching" aria-label="搜索" @click="doSearch" />
               </template>
             </el-input>
           </div>
@@ -180,7 +182,7 @@
                       <span v-if="item.latest_chapter" style="margin-left:12px">最新：{{ item.latest_chapter }}</span>
                     </div>
                   </div>
-                  <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+                  <div class="result-actions" style="display:flex;align-items:center;gap:8px;flex-shrink:0">
                     <el-button
                       v-if="isAddedToShelf(item.source_url)"
                       size="small"
@@ -432,5 +434,43 @@ watch(searchMode, () => {
   color: var(--accent-ice);
   border-radius: 4px;
   font-size: 12px;
+}
+
+/* ── v1.5 移动端适配 ────────────────────────────── */
+@media (max-width: 640px) {
+  /* 搜索控件整行堆叠：标签切换一行，源站 + 输入框一行 */
+  .search-controls {
+    flex: 1 1 100% !important;
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .mode-group {
+    flex-basis: 100%;
+    display: flex;
+  }
+  .mode-group :deep(.el-radio-button) {
+    flex: 1;
+  }
+  .mode-group :deep(.el-radio-button__inner) {
+    width: 100%;
+    text-align: center;
+  }
+  .source-select {
+    flex: 0 1 120px;
+  }
+  .query-input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* 搜索结果卡片：操作按钮独立一行 */
+  .result-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .external-result-card {
+    padding: 16px;
+  }
 }
 </style>

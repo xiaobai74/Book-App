@@ -1,6 +1,7 @@
 <!-- ═══════════════════════════════════════════════════════════════
      小说管理App · 书架首页
-     v1.2 — 新增书架快速检索：搜索栏、防抖搜索、快捷筛选标签
+     v1.2 — 新增书架快速检索：搜索栏、快捷筛选标签
+     v1.3.2 — 搜索改为点击「搜索」按钮 / 按 Enter 触发
      ═══════════════════════════════════════════════════════════════ -->
 <template>
   <div>
@@ -13,7 +14,7 @@
             <h2 style="font-size:clamp(22px,3vw,28px);font-weight:600">我的书架</h2>
             <p class="lead" style="margin-top:4px">共 <span class="num" style="font-family:var(--font-mono)">{{ booksStore.bookCount }}</span> 本小说</p>
           </div>
-          <el-button type="primary" @click="showAddDialog = true">
+          <el-button type="primary" class="shelf-add-btn" @click="showAddDialog = true">
             <el-icon style="margin-right:6px"><Plus /></el-icon>
             添加小说
           </el-button>
@@ -30,9 +31,20 @@
               size="large"
               :disabled="aiSearching"
               @input="onSearchInput"
+              @keyup.enter="onSearchKeyup"
               @clear="onSearchClear"
               class="shelf-search-input"
             />
+            <el-button
+              type="primary"
+              size="large"
+              class="search-submit-btn"
+              :loading="aiSearchMode && aiSearching"
+              :disabled="searchKeyword.trim().length < 2"
+              @click="performSearch"
+            >
+              {{ aiSearchMode ? 'AI 搜索' : '搜索' }}
+            </el-button>
             <el-radio-group
               v-model="aiSearchMode"
               size="small"
@@ -46,8 +58,13 @@
             </el-radio-group>
           </div>
 
-          <!-- AI 搜索进度提示 -->
-          <div v-if="aiSearching" class="ai-search-progress">
+          <!-- 关键词已编辑但尚未点击搜索的提示 -->
+          <div v-if="hasPendingSearch" class="search-pending-hint" role="status">
+            输入已更新，点击「{{ aiSearchMode ? 'AI 搜索' : '搜索' }}」按钮或按 Enter 查看结果
+          </div>
+
+          <!-- AI 搜索进度提示（aria-live：搜索状态由读屏软件播报） -->
+          <div v-if="aiSearching" class="ai-search-progress" aria-live="polite">
             <span class="ai-search-dots">
               <span class="dot"></span>
               <span class="dot"></span>
@@ -67,14 +84,16 @@
         <template v-else>
           <!-- ── v1.2 增强：筛选标签（AI 搜索模式下隐藏，因为不适用） ── -->
           <div class="shelf-filter" v-if="!aiSearchMode && (displayBooks.length > 0 || filterTab !== 'all')">
-            <el-radio-group v-model="filterTab" size="small" @change="handleFilterChange">
-              <el-radio-button value="all">全部</el-radio-button>
-              <el-radio-button value="marked">已标记</el-radio-button>
-              <el-radio-button value="done">抓取完成</el-radio-button>
-              <el-radio-button value="has_epub">有 EPUB</el-radio-button>
-            </el-radio-group>
-            <span v-if="searchKeyword && displayBooks.length > 0" class="search-hint">
-              搜索 "{{ searchKeyword }}" 找到 {{ displayBooks.length }} 本
+            <div class="scroll-x shelf-filter-tabs">
+              <el-radio-group v-model="filterTab" size="small" class="filter-group" @change="handleFilterChange">
+                <el-radio-button value="all">全部</el-radio-button>
+                <el-radio-button value="marked">已标记</el-radio-button>
+                <el-radio-button value="done">抓取完成</el-radio-button>
+                <el-radio-button value="has_epub">有 EPUB</el-radio-button>
+              </el-radio-group>
+            </div>
+            <span v-if="hasAppliedSearch && displayBooks.length > 0" class="search-hint">
+              搜索 "{{ appliedSearchKeyword }}" 找到 {{ displayBooks.length }} 本
             </span>
           </div>
 
@@ -86,14 +105,14 @@
               <p style="margin-top:12px">AI 正在理解你的需求…</p>
               <p style="font-size:12px;margin-top:6px;color:var(--muted)">一般情况下 5-15 秒可完成，请耐心等待</p>
             </template>
-            <template v-else-if="searchKeyword">
+            <template v-else-if="hasAppliedSearch">
               <div class="empty-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" style="width:48px;height:48px;stroke:var(--muted)">
                   <circle cx="11" cy="11" r="7"/>
                   <path d="m21 21-4.35-4.35"/>
                 </svg>
               </div>
-              <p>未找到匹配 "{{ searchKeyword }}" 的书籍</p>
+              <p>未找到匹配 "{{ appliedSearchKeyword }}" 的书籍</p>
               <p style="font-size:12px;margin-top:6px;color:var(--muted)">试试其他关键词，或检查拼写是否正确</p>
               <div style="margin-top:16px;display:flex;gap:12px;justify-content:center">
                 <el-button @click="clearSearch">清除搜索</el-button>
@@ -117,28 +136,31 @@
           <!-- 书籍列表 -->
           <div v-else class="stack" style="gap:12px">
           <div v-for="book in displayBooks" :key="book.id" class="book-card" :class="{ 'ai-result': isAiSearchResult(book) }">
-            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
-              <div style="display:flex;align-items:flex-start;gap:16px">
-                <!-- 星标标记按钮 v1.2 -->
+            <div class="book-card-main" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+              <div class="book-card-left" style="display:flex;align-items:flex-start;gap:16px;min-width:0">
+                <!-- 星标标记按钮 v1.2（v1.4：aria-pressed 状态 + ≥32px 目标尺寸） -->
                 <button
                   class="mark-btn"
+                  type="button"
+                  :aria-pressed="book.is_marked"
+                  :aria-label="book.is_marked ? '取消标记' : '标记此书'"
                   :title="book.is_marked ? '取消标记' : '标记此书'"
                   @click.stop="toggleMark(book)"
                 >
                   <span v-if="book.is_marked" class="star star-filled">★</span>
                   <span v-else class="star star-empty">☆</span>
                 </button>
-                <router-link :to="`/detail/${book.id}`">
+                <router-link :to="`/detail/${book.id}`" class="shelf-cover">
                   <BookCover :title="book.title" :author="book.author" />
                 </router-link>
-                <div>
+                <div class="book-card-info" style="min-width:0">
                   <router-link :to="`/detail/${book.id}`" class="book-title">
-                    <!-- v1.2: 搜索结果高亮匹配文本 -->
-                    <span v-if="searchKeyword && searchKeyword.trim().length >= 2" v-html="highlightMatch(book.title)"></span>
+                    <!-- v1.2: 搜索结果高亮匹配文本（仅对已生效的搜索词高亮） -->
+                    <span v-if="hasAppliedSearch" v-html="highlightMatch(book.title)"></span>
                     <span v-else>{{ book.title }}</span>
                   </router-link>
                   <div class="book-author">
-                    <span v-if="searchKeyword && searchKeyword.trim().length >= 2" v-html="highlightMatch(book.author)"></span>
+                    <span v-if="hasAppliedSearch" v-html="highlightMatch(book.author)"></span>
                     <span v-else>{{ book.author }}</span>
                   </div>
                   <!-- v1.3: AI 搜索结果匹配原因和分数 -->
@@ -148,18 +170,20 @@
                   </div>
                 </div>
               </div>
-              <div style="display:flex;align-items:center;gap:12px">
-                <!-- v1.2: 阅读按钮 -->
+              <div class="book-card-actions" style="display:flex;align-items:center;gap:10px">
+                <!-- v1.2: 阅读按钮（v1.6：填充样式 + 图标 + 圆角） -->
                 <el-button
                   v-if="book.chapter_count > 0"
                   size="small"
                   type="primary"
-                  text
+                  round
+                  :icon="Reading"
                   @click="$router.push(`/reader/${book.id}/1`)"
                 >
                   阅读
                 </el-button>
-                <el-button type="danger" text :icon="Delete" size="small" @click="confirmDelete(book)">
+                <!-- 删除按钮（v1.6：plain danger 样式 + 圆角，文本颜色用自定义陶土红） -->
+                <el-button type="danger" plain round :icon="Delete" size="small" class="card-delete-btn" @click="confirmDelete(book)">
                   删除
                 </el-button>
               </div>
@@ -181,8 +205,8 @@
       <div class="container">© 小说管理App · 个人学习用途</div>
     </footer>
 
-    <!-- 添加书籍对话框 -->
-    <el-dialog v-model="showAddDialog" title="添加小说" width="420px" @opened="resetAddForm">
+    <!-- 添加书籍对话框（v1.5：去掉固定宽度，全局小屏规则自适应） -->
+    <el-dialog v-model="showAddDialog" title="添加小说" @opened="resetAddForm">
       <el-form ref="addFormRef" :model="addForm" :rules="addRules" label-position="top" @submit.prevent="handleAddBook">
         <el-form-item label="书名" prop="title">
           <el-input v-model="addForm.title" placeholder="请输入书名" />
@@ -209,8 +233,8 @@
             </router-link>
           </div>
           <div v-if="urlCheckResult !== null" style="margin-top: 6px; font-size: 12px;">
-            <span v-if="urlCheckResult.reachable" style="color: #67c23a">✓ 源站可达 (HTTP {{ urlCheckResult.status_code }})</span>
-            <span v-else style="color: #f56c6c">✗ {{ urlCheckResult.error_message }}</span>
+            <span v-if="urlCheckResult.reachable" style="color: var(--success)">✓ 源站可达 (HTTP {{ urlCheckResult.status_code }})</span>
+            <span v-else style="color: var(--danger)">✗ {{ urlCheckResult.error_message }}</span>
             <div v-if="urlCheckResult.suggested_fix" style="color: var(--muted); margin-top: 2px;">
               💡 {{ urlCheckResult.suggested_fix }}
             </div>
@@ -227,7 +251,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
-import { Plus, Delete, Search } from '@element-plus/icons-vue'
+import { Plus, Delete, Search, Reading } from '@element-plus/icons-vue'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useBooksStore } from '@/stores'
@@ -240,29 +264,55 @@ import StatusBadge from '@/components/StatusBadge.vue'
 
 const booksStore = useBooksStore()
 
-// ── v1.2 新增：搜索状态 ────────────────────────────────
+// ── v1.2 新增：搜索状态（v1.3.2：由防抖自动搜索改为按钮/Enter 触发） ──
 const searchKeyword = ref('')
-const debounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+/** 普通搜索已生效的关键词（点击搜索后更新；输入未生效时为空） */
+const appliedKeyword = ref('')
 
 // ── v1.3 新增：AI 搜索状态 ────────────────────────────
 const aiSearchMode = ref(false)
 const aiSearching = ref(false)
 const aiSearchResults = ref<AiSearchResult[]>([])
-const aiDebounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 // AI 请求序号：模式切换/连续搜索时丢弃过期响应，防止旧结果覆盖新结果
 let aiRequestSeq = 0
+// 已生效的 AI 搜索词：输入变更后立即失效旧结果，等待用户再次点击搜索
+const appliedAiQuery = ref('')
+
+/** AI 搜索是否已生效（点击搜索后为 true；编辑关键词或清除后为 false） */
+const isAiApplied = computed(() => {
+  if (!aiSearchMode.value) return false
+  if (appliedAiQuery.value.trim().length < 2) return false
+  return searchKeyword.value.trim() === appliedAiQuery.value.trim()
+})
 
 // ── v1.2 新增：筛选标签 ────────────────────────────────
 type FilterTab = 'all' | 'marked' | 'done' | 'has_epub'
 const filterTab = ref<FilterTab>('all')
 
-// ── v1.2 新增：展示列表（根据搜索/筛选动态计算） ──────
+// ── v1.2 新增：展示列表（根据搜索/筛选动态计算） ──
+/** 高亮与空状态使用的"已生效"关键词：未点击搜索时为空，避免对未搜索内容高亮 */
+const appliedSearchKeyword = computed(() => {
+  if (aiSearchMode.value) return isAiApplied.value ? appliedAiQuery.value : ''
+  return appliedKeyword.value
+})
+const hasAppliedSearch = computed(() => appliedSearchKeyword.value.trim().length >= 2)
+
+/** 关键词已编辑但尚未点击搜索（提示用户按按钮或 Enter） */
+const hasPendingSearch = computed(() => {
+  if (hasAppliedSearch.value) return false
+  const q = searchKeyword.value.trim()
+  if (aiSearchMode.value) {
+    return q.length >= 2 && q !== appliedAiQuery.value.trim()
+  }
+  return q.length >= 2 && q !== appliedKeyword.value
+})
+
 const displayBooks = computed<Book[]>(() => {
-  const hasActiveSearch = searchKeyword.value && searchKeyword.value.trim().length >= 2
+  const hasActiveSearch = appliedKeyword.value && appliedKeyword.value.trim().length >= 2
   const hasActiveFilter = filterTab.value !== 'all'
 
-  // v1.3: AI 搜索模式 — 将 AiSearchResult 映射为临时 Book 对象用于展示
-  if (aiSearchMode.value && hasActiveSearch) {
+  // v1.3.2: AI 搜索模式 — 仅在 AI 搜索已生效（点击过搜索且关键词未变更）时展示 AI 结果
+  if (aiSearchMode.value && isAiApplied.value) {
     return aiSearchResults.value.map(r => ({
       id: r.book_id,
       title: r.title,
@@ -310,23 +360,67 @@ onMounted(async () => {
   }
 })
 
-// ── v1.2 新增：搜索逻辑 ────────────────────────────────
+// ── v1.3.2 搜索逻辑：点击搜索按钮 / 按 Enter 触发（不再防抖自动搜索） ──
 
-/** 防抖搜索输入处理 */
+/** 输入处理：关键词变更时使旧搜索结果失效（等待用户点击搜索），避免展示过期结果 */
 function onSearchInput() {
   if (aiSearchMode.value) {
-    // AI 搜索防抖 800ms（减少 API 调用）
-    if (aiDebounceTimer.value) clearTimeout(aiDebounceTimer.value)
-    aiDebounceTimer.value = setTimeout(() => {
-      performAiSearch()
-    }, 800)
+    // AI 模式：输入变化立即失效旧 AI 结果
+    if (searchKeyword.value.trim() !== appliedAiQuery.value.trim()) {
+      aiRequestSeq++  // 使在途 AI 请求失效
+      aiSearching.value = false
+      aiSearchResults.value = []
+    }
+  } else {
+    // 普通模式：编辑关键词后失效旧结果，恢复当前筛选状态（等待点击搜索）
+    const newQ = searchKeyword.value.trim()
+    if (newQ !== appliedKeyword.value) {
+      appliedKeyword.value = ''
+      applyCurrentFilter()
+    }
+  }
+}
+
+/** 输入框 Enter 键处理：IME 组合输入（中文选词）期间的回车不触发搜索 */
+function onSearchKeyup(e: KeyboardEvent) {
+  if ((e as KeyboardEvent & { isComposing?: boolean }).isComposing) return
+  performSearch()
+}
+
+/** 执行搜索（搜索按钮 / Enter 键入口，按当前模式分发） */
+function performSearch() {
+  if (aiSearchMode.value) {
+    performAiSearch()
+  } else {
+    performLocalSearch()
+  }
+}
+
+/** 普通搜索：点击搜索后生效，展示结果 */
+function performLocalSearch() {
+  const q = searchKeyword.value.trim()
+
+  if (!q || q.length < 2) {
+    // 关键词不足 2 字符：按当前筛选标签恢复
+    appliedKeyword.value = ''
+    applyCurrentFilter()
     return
   }
-  // 普通搜索防抖 300ms
-  if (debounceTimer.value) clearTimeout(debounceTimer.value)
-  debounceTimer.value = setTimeout(() => {
-    performSearch()
-  }, 300)
+
+  appliedKeyword.value = q
+
+  if (booksStore.isClientMode) {
+    // 客户端过滤：在 allBooks 中按书名和作者匹配，再叠加筛选条件
+    booksStore.clientFilter({
+      keyword: q,
+      marked: filterTab.value === 'marked' ? true : null,
+      hasEpub: filterTab.value === 'has_epub' ? true : undefined,
+      done: filterTab.value === 'done' ? true : undefined,
+    })
+  } else {
+    // 服务端搜索（书架超大时）
+    booksStore.search(q, 1, 20)
+  }
 }
 
 /** AI 自然语言搜索 */
@@ -334,6 +428,7 @@ async function performAiSearch() {
   const seq = ++aiRequestSeq
   const q = searchKeyword.value.trim()
   if (!q || q.length < 2) {
+    appliedAiQuery.value = ''
     aiSearchResults.value = []
     // 恢复客户端过滤模式显示
     if (booksStore.isClientMode) {
@@ -342,6 +437,7 @@ async function performAiSearch() {
     return
   }
 
+  appliedAiQuery.value = q
   aiSearching.value = true
   try {
     const { data } = await aiSearchBooks(q)
@@ -368,12 +464,13 @@ async function performAiSearch() {
 function onAiModeChange(val: boolean) {
   aiRequestSeq++  // 使所有在途 AI 请求失效，避免旧结果覆盖新模式
   if (!val) {
-    // 关闭 AI 模式 → 清除 AI 结果，恢复本地筛选
+    // 关闭 AI 模式 → 清除 AI 结果，恢复普通搜索状态
+    appliedAiQuery.value = ''
     aiSearchResults.value = []
     aiSearching.value = false
     if (searchKeyword.value && searchKeyword.value.trim().length >= 2) {
-      // 有搜索关键词 → 走客户端过滤或服务端搜索
-      performSearch()
+      // 输入框已有有效关键词 → 重新执行普通搜索，恢复切换前的状态
+      performLocalSearch()
     } else {
       // 无关键词 → 恢复全量缓存（优先本地缓存，避免不必要的服务端请求）
       booksStore.resetFilter()
@@ -382,40 +479,22 @@ function onAiModeChange(val: boolean) {
       }
     }
   } else {
-    // 开启 AI 模式 → 如果有输入立即搜索
-    if (searchKeyword.value && searchKeyword.value.trim().length >= 2) {
-      performAiSearch()
-    }
-  }
-}
-
-/** 执行搜索 */
-function performSearch() {
-  const q = searchKeyword.value.trim()
-
-  if (!q || q.length < 2) {
-    // 关键词不足 2 字符：按当前筛选标签恢复
-    applyCurrentFilter()
-    return
-  }
-
-  if (booksStore.isClientMode) {
-    // 客户端过滤：在 allBooks 中按书名和作者匹配，再叠加筛选条件
-    booksStore.clientFilter({
-      keyword: q,
-      marked: filterTab.value === 'marked' ? true : null,
-      hasEpub: filterTab.value === 'has_epub' ? true : undefined,
-      done: filterTab.value === 'done' ? true : undefined,
-    })
-  } else {
-    // 服务端搜索（书架超大时）
-    booksStore.search(q, 1, 20)
+    // 开启 AI 模式 → 清除普通搜索生效状态、显示全量书架，等待用户点击「AI 搜索」
+    appliedKeyword.value = ''
+    appliedAiQuery.value = ''
+    aiSearchResults.value = []
+    booksStore.resetFilter()
   }
 }
 
 /** 清空搜索 */
 function onSearchClear() {
+  aiRequestSeq++
   searchKeyword.value = ''
+  appliedKeyword.value = ''
+  appliedAiQuery.value = ''
+  aiSearchResults.value = []
+  aiSearching.value = false
   filterTab.value = 'all'
   booksStore.resetFilter()
   booksStore.searchResults = []
@@ -424,7 +503,6 @@ function onSearchClear() {
 
 function clearSearch() {
   aiSearchMode.value = false
-  aiSearchResults.value = []
   onSearchClear()
 }
 
@@ -440,13 +518,15 @@ function applyCurrentFilter() {
 /** 筛选标签切换 */
 function handleFilterChange(val: FilterTab) {
   if (searchKeyword.value && searchKeyword.value.trim().length >= 2) {
-    // 有搜索关键词时：关键词 + 筛选条件叠加
-    performSearch()
+    // 有搜索关键词时：关键词 + 筛选条件叠加（同时更新已生效词）
+    performLocalSearch()
   } else if (val === 'all') {
     // 全部：恢复全量书架
+    appliedKeyword.value = ''
     booksStore.fetchBooks(1, 20, null)
   } else {
     // 仅筛选（无搜索关键词）
+    appliedKeyword.value = ''
     applyCurrentFilter()
   }
 }
@@ -455,7 +535,7 @@ function handleFilterChange(val: FilterTab) {
 
 /** 高亮搜索关键词匹配的部分 */
 function highlightMatch(text: string): string {
-  const q = searchKeyword.value.trim()
+  const q = appliedSearchKeyword.value.trim()
   if (!q || q.length < 2) return escapeHtml(text)
   // 转义正则特殊字符
   const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -643,6 +723,19 @@ function confirmDelete(book: Book) {
   flex: 1;
 }
 
+/* v1.3.2 新增：搜索触发按钮 */
+.search-submit-btn {
+  flex-shrink: 0;
+  min-width: 96px;
+}
+
+/* v1.3.2 新增：关键词已编辑未搜索的提示 */
+.search-pending-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .search-mode-toggle {
   flex-shrink: 0;
 }
@@ -675,23 +768,22 @@ function confirmDelete(book: Book) {
   color: var(--muted);
 }
 
-/* ── 搜索高亮 ──────────────────────────────────────── */
+/* ── 搜索高亮（暖黄底 + 深黄褐字，8.2:1 达标；统一使用暖色令牌） ── */
 :deep(.search-highlight) {
-  background: #fff3cd;
-  color: #856404;
+  background: var(--warm-mark-bg);
+  color: var(--warm-mark-fg);
   padding: 0 2px;
   border-radius: 2px;
   font-weight: 500;
 }
 
-/* ── v1.3: AI 搜索结果样式 ─────────────────────────── */
+/* ── v1.3: AI 搜索结果样式（v1.4：匹配分数徽标改为暖金点缀） ── */
 .ai-result {
-  border-left: 3px solid var(--accent-ice);
-  transition: border-color 0.2s;
+  border-left: 3px solid var(--accent);
 }
 
 .ai-result:hover {
-  border-left-color: var(--accent-ice);
+  border-left-color: var(--accent-hover);
 }
 
 .ai-match-info {
@@ -708,8 +800,8 @@ function confirmDelete(book: Book) {
   min-width: 36px;
   height: 22px;
   padding: 0 6px;
-  background: var(--accent-ice-soft, rgba(100, 180, 255, 0.12));
-  color: var(--accent-ice);
+  background: var(--warm-soft);
+  color: var(--warm-fg);
   font-size: 11px;
   font-weight: 700;
   font-family: var(--font-mono);
@@ -722,19 +814,38 @@ function confirmDelete(book: Book) {
   line-height: 1.4;
 }
 
-/* ── 标记按钮 ──────────────────────────────────── */
+/* ── 卡片操作按钮（v1.6：填充/描边样式，更像按钮） ── */
+.book-card-actions :deep(.el-button) {
+  font-weight: 500;
+}
+
+/* 删除按钮：plain danger 描边 + 自定义陶土红文本（对齐全局 --danger 令牌） */
+.book-card-actions :deep(.card-delete-btn) {
+  --el-button-text-color: var(--danger);
+  --el-button-border-color: color-mix(in oklch, var(--danger) 40%, transparent);
+  --el-button-hover-text-color: var(--surface);
+  --el-button-hover-bg-color: var(--danger);
+  --el-button-hover-border-color: var(--danger);
+  --el-button-active-text-color: var(--surface);
+  --el-button-active-bg-color: var(--danger);
+  --el-button-active-border-color: var(--danger);
+}
+
+/* ── 标记按钮（v1.4：暖金星色 + ≥32px 目标尺寸，hover 用即时颜色反馈） ── */
 .mark-btn {
   background: none;
   border: none;
   cursor: pointer;
-  padding: 2px 4px;
+  padding: 4px;
+  min-width: 32px;
+  min-height: 32px;
   display: flex;
   align-items: center;
-  transition: transform 0.15s;
+  justify-content: center;
 }
 
-.mark-btn:hover {
-  transform: scale(1.2);
+.mark-btn:hover .star-empty {
+  color: var(--accent-warm);
 }
 
 .star {
@@ -747,7 +858,7 @@ function confirmDelete(book: Book) {
 }
 
 .star-filled {
-  color: #c9a96e;
+  color: var(--accent-warm);
 }
 
 /* ── AI 搜索进度提示 ────────────────────────────── */
@@ -782,5 +893,86 @@ function confirmDelete(book: Book) {
   height: 6px;
   border-radius: 50%;
   background: var(--accent-ice);
+}
+
+/* ── v1.5 移动端适配 ────────────────────────────── */
+@media (max-width: 900px) {
+  .shelf-search-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .search-submit-btn {
+    width: 100%;
+  }
+  .search-mode-toggle {
+    align-self: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  /* 筛选标签整行横向滚动（含搜索提示） */
+  .shelf-filter {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .shelf-filter-tabs {
+    width: 100%;
+    padding-bottom: 4px;
+  }
+  .filter-group {
+    display: inline-flex;
+    flex-wrap: nowrap;
+  }
+  .search-hint {
+    font-size: 12px;
+  }
+
+  /* 卡片内边距收紧 */
+  .book-card {
+    padding: 14px;
+    gap: 10px;
+  }
+
+  /* 封面缩至 92px 高，给书名信息腾出空间 */
+  .shelf-cover :deep(.book-cover) {
+    width: 92px;
+    height: 124px;
+    padding: 10px 10px 10px;
+  }
+  .shelf-cover :deep(.book-cover .cover-title) {
+    font-size: 13px;
+  }
+
+  /* 信息区允许换行，长标题不挤压操作按钮 */
+  .book-card-left {
+    flex: 1;
+    gap: 10px;
+  }
+  .book-card-info {
+    flex: 1;
+  }
+  .book-title {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    line-height: 1.35;
+  }
+
+  /* 操作按钮压缩内边距，保证卡片一行放下 */
+  .book-card-actions {
+    gap: 6px;
+  }
+  .book-card-actions :deep(.el-button) {
+    padding: 6px 10px;
+    margin: 0;
+  }
+
+  .book-meta-row {
+    gap: 8px;
+    font-size: 11px;
+  }
 }
 </style>

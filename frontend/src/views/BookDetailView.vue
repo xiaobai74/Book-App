@@ -3,7 +3,7 @@
      ═══════════════════════════════════════════════════════════════ -->
 <template>
   <div>
-    <TopNav :show-settings-btn="false" :show-back-to-shelf="true" />
+    <TopNav :show-back-to-shelf="true" />
 
     <section class="section">
       <div class="container">
@@ -26,12 +26,15 @@
           <!-- 书籍信息卡片 -->
           <div class="card" style="margin-bottom:24px">
             <div class="detail-header">
-              <div style="flex:1">
+              <div class="detail-info" style="flex:1">
                 <!-- v1.3 修复: PRD 要求详情页有星标标记按钮（原仅书架列表页可标记） -->
                 <h1 style="font-size:clamp(28px,4vw,36px);font-weight:700;display:inline-flex;align-items:center;gap:10px">
                   {{ book.title }}
                   <button
                     class="mark-btn"
+                    type="button"
+                    :aria-pressed="book.is_marked"
+                    :aria-label="book.is_marked ? '取消标记' : '标记此书'"
                     :title="book.is_marked ? '取消标记' : '标记此书'"
                     @click="toggleMark"
                   >
@@ -97,8 +100,8 @@
                   <el-button @click="$router.push('/shelf')">返回书架</el-button>
                 </div>
 
-                <!-- 抓取进度 -->
-                <div v-if="crawlProgressVisible" style="margin-top:16px">
+                <!-- 抓取进度（aria-live：进度变化由读屏软件播报） -->
+                <div v-if="crawlProgressVisible" style="margin-top:16px" aria-live="polite">
                   <div style="display:flex;justify-content:space-between;margin-bottom:8px">
                     <span style="font-size:12px;color:var(--muted)">抓取进度：{{ crawlText }}</span>
                     <span class="num" style="font-size:12px;color:var(--muted)">{{ crawlPercent }}%</span>
@@ -525,19 +528,21 @@ async function handleDownload(format: 'epub' | 'txt') {
   color: var(--muted);
 }
 
-/* ── 星标标记按钮（与书架页一致） ─────────────────── */
+/* ── 星标标记按钮（与书架页一致，v1.4：暖金 + WCAG 2.5.8 目标尺寸） ── */
 .mark-btn {
   background: none;
   border: none;
   cursor: pointer;
-  padding: 2px 6px;
+  padding: 4px;
+  min-width: 32px;
+  min-height: 32px;
   display: inline-flex;
   align-items: center;
-  transition: transform 0.15s;
+  justify-content: center;
 }
 
-.mark-btn:hover {
-  transform: scale(1.2);
+.mark-btn:hover .star-empty {
+  color: var(--accent-warm);
 }
 
 .star {
@@ -550,7 +555,7 @@ async function handleDownload(format: 'epub' | 'txt') {
 }
 
 .star-filled {
-  color: #c9a96e;
+  color: var(--accent-warm);
 }
 
 /* ── AI 摘要 v1.3 ──────────────────────────────────── */
@@ -573,5 +578,44 @@ async function handleDownload(format: 'epub' | 'txt') {
   font-size: 14px;
   color: var(--fg-soft);
   white-space: pre-wrap;
+}
+
+/* ── v1.5 移动端适配 ────────────────────────────── */
+@media (max-width: 640px) {
+  .card {
+    padding: 16px;
+  }
+
+  /* 封面在信息下方居中，避免与标题抢宽度 */
+  .detail-header {
+    flex-direction: column-reverse;
+    align-items: center;
+    gap: 20px;
+  }
+  .detail-info {
+    width: 100%;
+  }
+
+  /* 操作按钮组收紧间距、允许换行 */
+  .detail-actions {
+    gap: 8px;
+  }
+  .detail-actions :deep(.el-button) {
+    margin: 0;
+  }
+
+  /* 章节行：字数列换行到标题下，标题不折行 */
+  .chapter-row {
+    flex-wrap: wrap;
+    gap: 4px 0;
+  }
+  .chapter-row .ch-title {
+    flex: 0 1 100%;
+    order: 3;
+    padding: 0;
+  }
+  .chapter-row .ch-num {
+    min-width: 0;
+  }
 }
 </style>
