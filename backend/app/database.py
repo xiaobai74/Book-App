@@ -9,14 +9,21 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
 
-# 异步引擎（aiomysql 驱动）
-engine = create_async_engine(
-    settings.database_url,
-    echo=False,          # 生产环境关闭 SQL 日志
-    pool_size=10,        # 连接池大小
-    max_overflow=20,     # 溢出连接数
-    pool_pre_ping=True,  # 连接前检查可用性，防止使用断开的连接
-)
+# 异步引擎（MySQL 用连接池参数；桌面版 SQLite 用独立连接参数）
+if settings.database_url.startswith("sqlite"):
+    engine = create_async_engine(
+        settings.database_url,
+        echo=False,
+        connect_args={"check_same_thread": False},
+    )
+else:
+    engine = create_async_engine(
+        settings.database_url,
+        echo=False,          # 生产环境关闭 SQL 日志
+        pool_size=10,        # 连接池大小
+        max_overflow=20,     # 溢出连接数
+        pool_pre_ping=True,  # 连接前检查可用性，防止使用断开的连接
+    )
 
 # 异步会话工厂
 async_session = async_sessionmaker(

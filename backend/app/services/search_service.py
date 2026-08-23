@@ -12,7 +12,7 @@ import re
 import ssl
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 import httpx
 from bs4 import BeautifulSoup
@@ -26,7 +26,7 @@ _USER_AGENTS = [
     f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CURRENT_UA_VERSION}.0.0.0 Safari/537.36",
     f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CURRENT_UA_VERSION}.0.0.0 Safari/537.36",
     f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CURRENT_UA_VERSION}.0.0.0 Safari/537.36",
-    f"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
 ]
 
 
@@ -261,8 +261,7 @@ class SearchService:
             if len(all_results) >= limit:
                 break
 
-            # 需要 HTML 来查找下一页链接
-            from bs4 import BeautifulSoup
+            # 查找下一页链接
             soup = BeautifulSoup(current_html or "", "html.parser")
 
             # 查找下一页链接
@@ -370,7 +369,6 @@ class SearchService:
             # 如果 URL 是相对路径，补全
             base = rule.get("url", "")
             if result.source_url and not result.source_url.startswith("http"):
-                from urllib.parse import urljoin
                 result.source_url = urljoin(base, result.source_url)
 
             # 去重检查
@@ -502,7 +500,6 @@ class SearchService:
             if "alert(" in text and any(
                 kw in text.lower() for kw in ("搜索间隔", "稍后", "请稍后", "频率", "太快")
             ):
-                import re
                 alert_text = re.search(r"alert\s*\(\s*['\"](.+?)['\"]\s*\)", text)
                 if alert_text:
                     return alert_text.group(1)

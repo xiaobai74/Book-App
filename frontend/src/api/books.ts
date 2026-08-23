@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════
    小说管理App · 书架 & 搜索 API
    ═══════════════════════════════════════════════════════ */
-import http from './http'
+import http, { API_BASE_URL } from './http'
 import type { ApiResponse, Book, BookDetail, ChapterSummary, ChapterDetail, ReadingProgress, AddBookRequest, CrawlStatus, SearchParams, SearchResultItem, SourceItem, CrawlSource, CrawlSourceFormData, CrawlSourceTestRequest, CrawlSourceTestResult, AiSearchResult } from '@/types'
 
 /** 获取书架列表 */
@@ -76,9 +76,14 @@ export function getCrawlStatus(bookId: string) {
   return http.get<ApiResponse<CrawlStatus>>(`/books/${bookId}/crawl-status`)
 }
 
-/** 下载 EPUB/TXT（返回直接下载链接） */
+/** 下载 EPUB/TXT（返回直接下载链接）
+ *
+ * 桌面版后端在随机动态端口、移动端在云端服务器，
+ * 必须拼接当前环境的 API 根地址（见 http.ts 的 baseURL），
+ * 不能硬编码 /api/v1 相对路径，否则 fetch 会打到本地页面的源上。
+ */
 export function getDownloadUrl(bookId: string, format: 'epub' | 'txt' = 'epub') {
-  return `/api/v1/books/${bookId}/download?format=${format}`
+  return `${API_BASE_URL}/books/${bookId}/download?format=${format}`
 }
 
 /** 检查源站 URL 连通性 */

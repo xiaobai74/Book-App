@@ -8,14 +8,27 @@
 import json
 import logging
 import re
+import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-# 规则文件目录
-_RULES_DIR = Path(__file__).resolve().parent
+# 内置规则文件目录（PyInstaller frozen 时从打包的 _MEIPASS 读取）
+if getattr(sys, "frozen", False):
+    _RULES_DIR = Path(sys._MEIPASS) / "rules"
+else:
+    _RULES_DIR = Path(__file__).resolve().parent
+
+# 自定义规则持久化目录（桌面版写入用户数据目录，保证重启不丢失）
+if getattr(sys, "frozen", False):
+    from platformdirs import user_data_dir as _user_data_dir
+
+    _WRITABLE_RULES_DIR = Path(_user_data_dir("NovelManager", appauthor=False))
+    _WRITABLE_RULES_DIR.mkdir(parents=True, exist_ok=True)
+else:
+    _WRITABLE_RULES_DIR = _RULES_DIR
 
 # 默认激活的规则文件
 _DEFAULT_RULES_FILE = "main.json"
@@ -89,7 +102,7 @@ class RuleEngine:
 
     def _load_custom_rules(self) -> None:
         """从 custom_sources.json 加载用户自定义的源站规则。"""
-        filepath = _RULES_DIR / _CUSTOM_RULES_FILE
+        filepath = _WRITABLE_RULES_DIR / _CUSTOM_RULES_FILE
         if not filepath.exists():
             return
 
@@ -123,15 +136,6 @@ class RuleEngine:
         if count > 0:
             logger.info(f"已加载 {count} 条自定义源站规则 (来自 {_CUSTOM_RULES_FILE})")
 
-    def _save_custom_rules(self) -> None:
-        """将当前自定义规则持久化到 custom_sources.json。"""
-        filepath = _RULES_DIR / _CUSTOM_RULES_FILE
-        try:
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(self._custom_rules, f, ensure_ascii=False, indent=2)
-        except OSError as e:
-            logger.error(f"保存自定义规则失败: {e}")
-
     # ── 通用回退规则 ──────────────────────────────────
 
     @staticmethod
@@ -158,13 +162,6 @@ class RuleEngine:
             "toc": {},         # 空 → 触发通用章节解析
             "chapter": {},     # 空 → 触发通用正文提取
         }
-
-    def reload(self, filename: str | None = None) -> None:
-        """重新加载规则文件。"""
-        self._rules.clear()
-        self._rules_by_domain.clear()
-        self._rules_by_id.clear()
-        self._load_rules(filename or _DEFAULT_RULES_FILE)
 
     # ── 匹配 ──────────────────────────────────────────
 
@@ -237,16 +234,6 @@ class RuleEngine:
             return self._custom_rules[custom_index]
         return None
 
-    def get_source_by_name(self, name: str) -> dict[str, Any] | None:
-        """按源站名称查找规则（内置 + 自定义）。"""
-        for rule in self._rules:
-            if rule.get("name") == name:
-                return rule
-        for rule in self._custom_rules:
-            if rule.get("name") == name:
-                return rule
-        return None
-
     # ── 查询 ──────────────────────────────────────────
 
     def list_sources(self) -> list[dict[str, Any]]:
@@ -283,126 +270,19 @@ class RuleEngine:
                 result.append((i + len(self._rules), r))
         return result
 
-    # ── 自定义源站管理 ──────────────────────────────
-
-    def add_custom_source(self, rule: dict[str, Any]) -> int:
-        """添加一条自定义源站规则并持久化。
-
-        Args:
-            rule: 规则字典，需包含 name, url 等字段
-
-        Returns:
-            新规则的 ID（在自定义规则列表中的索引 + 基础偏移量）
-        """
-        rule["custom"] = True  # 标记为自定义规则
-        self._custom_rules.append(rule)
-
-        # 更新索引
-        new_id = len(self._rules) + len(self._custom_rules) - 1
-        self._rules_by_id[new_id] = rule
-
-        # 更新域名索引
-        domain = self._extract_domain(rule.get("url", ""))
-        if domain:
-            self._rules_by_domain[domain] = rule
-
-        self._save_custom_rules()
-        logger.info(f"已添加自定义源站: {rule.get('name', '未知')} (domain={domain}, id={new_id})")
-        return new_id
-
-    def update_custom_source(self, index: int, rule: dict[str, Any]) -> bool:
-        """更新一条自定义源站规则。
-
-        Args:
-            index: 自定义规则列表中的索引
-            rule: 新的规则字典
-
-        Returns:
-            是否成功
-        """
-        if index < 0 or index >= len(self._custom_rules):
-            return False
-
-        # 移除旧域名索引
-        old_domain = self._extract_domain(self._custom_rules[index].get("url", ""))
-        if old_domain and old_domain in self._rules_by_domain:
-            del self._rules_by_domain[old_domain]
-
-        rule["custom"] = True
-        self._custom_rules[index] = rule
-
-        # 更新 _rules_by_id 索引
-        global_id = len(self._rules) + index
-        self._rules_by_id[global_id] = rule
-
-        # 添加新域名索引
-        domain = self._extract_domain(rule.get("url", ""))
-        if domain:
-            self._rules_by_domain[domain] = rule
-
-        self._save_custom_rules()
-        logger.info(f"已更新自定义源站: {rule.get('name', '未知')}")
-        return True
-
-    def remove_custom_source(self, index: int) -> bool:
-        """移除一条自定义源站规则。
-
-        Args:
-            index: 自定义规则列表中的索引
-
-        Returns:
-            是否成功
-        """
-        if index < 0 or index >= len(self._custom_rules):
-            return False
-
-        rule = self._custom_rules.pop(index)
-
-        # 清理 _rules_by_id 索引
-        old_global_id = len(self._rules) + index
-        if old_global_id in self._rules_by_id:
-            del self._rules_by_id[old_global_id]
-        # 移除后，后续自定义规则的 ID 都减 1，需要重建它们的索引
-        for i in range(index, len(self._custom_rules)):
-            new_global_id = len(self._rules) + i
-            if new_global_id in self._rules_by_id:
-                del self._rules_by_id[new_global_id]
-            self._rules_by_id[new_global_id] = self._custom_rules[i]
-
-        # 清理域名索引
-        domain = self._extract_domain(rule.get("url", ""))
-        if domain and domain in self._rules_by_domain:
-            del self._rules_by_domain[domain]
-
-        self._save_custom_rules()
-        logger.info(f"已移除自定义源站: {rule.get('name', '未知')}")
-        return True
-
-    def get_custom_sources(self) -> list[dict[str, Any]]:
-        """返回所有自定义源站的摘要信息。"""
-        return [
-            {
-                "id": i + len(self._rules),
-                "name": r.get("name", "未知"),
-                "url": r.get("url", ""),
-                "has_search": "search" in r and not r.get("search", {}).get("disabled", False),
-                "comment": r.get("comment", ""),
-                "is_custom": True,
-                "rule": r,  # 包含完整规则，供前端编辑
-            }
-            for i, r in enumerate(self._custom_rules)
-        ]
-
     @property
     def rules(self) -> list[dict[str, Any]]:
+        """内置规则列表（供测试与诊断脚本读取）"""
         return self._rules
 
     @property
     def custom_rules(self) -> list[dict[str, Any]]:
+        """自定义规则列表"""
         return self._custom_rules
 
     @property
     def loaded(self) -> bool:
+        """规则文件是否已加载"""
         return self._loaded
 
     # ── 工具 ──────────────────────────────────────────

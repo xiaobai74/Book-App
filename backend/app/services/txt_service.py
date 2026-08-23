@@ -8,12 +8,13 @@ import logging
 import re
 from pathlib import Path
 
+from app.config import settings
 from app.utils.filenames import safe_filename_component
 
 logger = logging.getLogger(__name__)
 
-# TXT 输出目录
-_TXT_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / "txt_output"
+# TXT 输出目录（桌面版存用户数据目录，由 config 统一配置）
+_TXT_OUTPUT_DIR = Path(settings.txt_output_dir)
 
 
 class TxtService:

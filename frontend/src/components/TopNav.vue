@@ -3,11 +3,19 @@
      v1.5 — 移动端适配：≤760px 搜索框收进可展开行（汉堡按钮唤起），
            导航操作按钮换为图标+aria-label（触摸目标 ≥36px）
      v1.6 — 设置与退出合并为用户头像下拉菜单（移动端不再溢出）
+     v1.9 — 书架内搜索合并到主搜索框：点击搜索携带 q/mode/ai 参数
+           跳转统一搜索页执行
+     v2.0 — AI 搜索开关放用户头像下拉菜单：开启后书架内搜索可搭配
+           普通搜索（搜索页书架内 tab 显示普通 / AI 切换），
+           未开启时书架内搜索默认普通搜索
+     v2.1 — 智能搜索模式路由：AI 开关开启时，书架内搜索提交前按
+           查询内容自动选择搜索方式（自然语言描述 → AI 语义，
+           书名/作者 → 普通），不再需要手动切换模式
      ═══════════════════════════════════════════════════════════════ -->
 <template>
   <header class="topnav">
     <div class="topnav-inner">
-      <router-link to="/shelf" class="logo-area" aria-label="返回书架首页">
+      <div class="logo-area">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
           <path d="M4 19.5A2.5 2.5 0 016.5 17H20"/>
           <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/>
@@ -15,9 +23,10 @@
           <line x1="8" y1="11" x2="14" y2="11"/>
         </svg>
         我的书架
-      </router-link>
+      </div>
 
-      <!-- 桌面搜索框（v1.6：自定义 flex 容器替代 input-group，prepend/append 有内部负 margin hack 导致错位） -->
+      <!-- 桌面搜索框（v1.6：自定义 flex 容器替代 input-group，prepend/append 有内部负 margin hack 导致错位；
+           v1.9：书架内搜索合并至此；v2.0：AI 搜索开关在头像菜单，此处仅保留范围选择） -->
       <div v-if="showSearch" class="desktop-search-box">
         <el-select
           v-model="searchTarget"
@@ -30,13 +39,16 @@
         </el-select>
         <el-input
           v-model="searchQuery"
-          :placeholder="searchPlaceholder"
+          :placeholder="inputPlaceholder"
           :prefix-icon="Search"
           class="desktop-search-input"
           clearable
           @keyup.enter="handleSearch"
         />
-        <el-button aria-label="搜索" @click="handleSearch">
+        <el-button
+          aria-label="搜索"
+          @click="handleSearch"
+        >
           <el-icon><Search /></el-icon>
         </el-button>
       </div>
@@ -61,19 +73,38 @@
           <el-icon><Search /></el-icon>
         </el-button>
 
-        <!-- 用户头像下拉菜单：修改密码 / 退出登录（v1.6） -->
+        <!-- 用户头像下拉菜单：自定义背景 / 修改密码 / 退出登录（v1.8 新增背景入口） -->
         <el-dropdown class="avatar-dropdown" trigger="click" @command="handleUserCommand">
           <button
             type="button"
             class="user-avatar user-avatar-btn"
-            :aria-label="`用户菜单（${authStore.userEmail || '未登录'}），修改密码或退出登录`"
+            :aria-label="`用户菜单（${authStore.userEmail || '未登录'}），AI 搜索开关、自定义背景、修改密码或退出登录`"
           >
             {{ authStore.avatarLetter }}
           </button>
           <template #dropdown>
             <el-dropdown-menu>
               <!-- 图标使用全局注册的字符串名，避免组件响应式警告 -->
-              <el-dropdown-item icon="Key" command="changePassword">
+              <el-dropdown-item icon="Picture" command="themeSettings">
+                <span class="dropdown-item-text">自定义背景</span>
+              </el-dropdown-item>
+              <!-- AI 搜索开关（v2.0）：开启后书架内搜索可搭配普通搜索使用 -->
+              <el-dropdown-item
+                command=""
+                class="ai-switch-item"
+                :divided="false"
+              >
+                <div class="ai-switch-row" @click.stop>
+                  <span class="dropdown-item-text">AI 搜索</span>
+                  <el-switch
+                    :model-value="shelfSearch.aiEnabled"
+                    size="small"
+                    :aria-label="`AI 搜索功能${shelfSearch.aiEnabled ? '已开启' : '已关闭'}`"
+                    @update:model-value="shelfSearch.setAiEnabled"
+                  />
+                </div>
+              </el-dropdown-item>
+              <el-dropdown-item icon="Key" command="changePassword" divided>
                 <span class="dropdown-item-text">修改个人密码</span>
               </el-dropdown-item>
               <el-dropdown-item icon="SwitchButton" command="logout" divided>
@@ -93,13 +124,18 @@
         </el-select>
         <el-input
           v-model="searchQuery"
-          :placeholder="searchPlaceholder"
+          :placeholder="inputPlaceholder"
           :prefix-icon="Search"
           class="mobile-search-input"
           clearable
           @keyup.enter="handleSearch"
         />
-        <el-button type="primary" size="small" aria-label="搜索" @click="handleSearch">
+        <el-button
+          type="primary"
+          size="small"
+          aria-label="搜索"
+          @click="handleSearch"
+        >
           <el-icon><Search /></el-icon>
         </el-button>
       </div>
@@ -107,18 +143,22 @@
 
     <!-- 修改密码弹窗（由头像下拉菜单唤起，v1.6 新增） -->
     <ChangePasswordDialog v-model="changePasswordVisible" />
+    <!-- 自定义背景设置弹窗（v1.8 新增，显隐由 theme store 驱动） -->
+    <ThemeSettingsDialog />
   </header>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
-import { useAuthStore } from '@/stores'
+import { useAuthStore, useShelfSearchStore } from '@/stores'
+import { useThemeStore } from '@/stores/theme'
 import { ElMessageBox } from 'element-plus'
 import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
+import ThemeSettingsDialog from '@/components/ThemeSettingsDialog.vue'
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   showSearch?: boolean
   showBackToShelf?: boolean
   searchPlaceholder?: string
@@ -129,12 +169,26 @@ withDefaults(defineProps<{
 })
 
 const authStore = useAuthStore()
+const themeStore = useThemeStore()
+/** v2.0：AI 搜索开关状态（头像菜单），开启时书架内搜索可携带 ai 参数 */
+const shelfSearch = useShelfSearchStore()
 const router = useRouter()
 const searchQuery = ref('')
 const searchTarget = ref<'shelf' | 'web'>('web')
 const mobileSearchOpen = ref(false)
 const changePasswordVisible = ref(false)
 
+/** 输入框占位文案：书架内按开关状态区分自动识别 / 普通搜索（v2.1，AI 开启时自动识别） */
+const inputPlaceholder = computed(() => {
+  if (searchTarget.value === 'shelf') {
+    return shelfSearch.aiEnabled
+      ? '输入书名、作者或自然语言描述…'
+      : '搜索书名或作者…'
+  }
+  return props.searchPlaceholder
+})
+
+/** 执行搜索：书架内跳转 /search（v2.1：提交前按查询意图自动选择 AI / 普通并携带 ai 参数），全网搜索同 v1.9 前行为 */
 function handleSearch() {
   const q = searchQuery.value.trim()
   if (!q) return
@@ -142,13 +196,18 @@ function handleSearch() {
   if (searchTarget.value === 'web') {
     router.push(`/search?q=${encodeURIComponent(q)}`)
   } else {
-    router.push(`/search?q=${encodeURIComponent(q)}&mode=shelf`)
+    // v2.1：AI 开关开启时按查询内容自动识别搜索方式（用户未在结果页手动覆盖的前提下）
+    shelfSearch.applySearchMode(q)
+    const ai = shelfSearch.aiEnabled && shelfSearch.aiMode ? '1' : '0'
+    router.push(`/search?q=${encodeURIComponent(q)}&mode=shelf&ai=${ai}`)
   }
 }
 
-/** 头像下拉菜单命令分发（v1.6） */
+/** 头像下拉菜单命令分发（v1.6；v1.8 新增自定义背景入口） */
 function handleUserCommand(command: string) {
-  if (command === 'changePassword') {
+  if (command === 'themeSettings') {
+    themeStore.openSettings()
+  } else if (command === 'changePassword') {
     changePasswordVisible.value = true
   } else if (command === 'logout') {
     handleLogout()
@@ -261,6 +320,15 @@ function handleLogout() {
 .avatar-dropdown :deep(.el-dropdown-menu__item) {
   display: flex;
   align-items: center;
+}
+
+/* AI 搜索开关行（v2.0）：文字与开关两端对齐，点击项任意位置不触发命令 */
+.ai-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 16px;
 }
 
 /* ── 桌面搜索框：prepend 下拉与 append 按钮撑满输入框高度（v1.6） ──

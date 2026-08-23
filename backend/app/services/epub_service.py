@@ -9,12 +9,13 @@ from pathlib import Path
 
 from ebooklib import epub
 
+from app.config import settings
 from app.utils.filenames import safe_filename_component
 
 logger = logging.getLogger(__name__)
 
-# EPUB 输出目录
-_EPUB_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / "epub_output"
+# EPUB 输出目录（桌面版存用户数据目录，由 config 统一配置）
+_EPUB_OUTPUT_DIR = Path(settings.epub_output_dir)
 
 
 class EpubService:

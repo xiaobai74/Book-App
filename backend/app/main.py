@@ -30,6 +30,7 @@ from app.api.v1.books import router as books_router
 from app.api.v1.books import crawl_source_router
 from app.api.v1.ai import router as ai_router
 from app.config import settings
+from app.database import Base, engine
 from app.middleware.error_handler import (
     AppException,
     app_exception_handler,
@@ -42,6 +43,10 @@ from app.middleware.error_handler import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    # 桌面版（SQLite）：首次启动自动建表，无需手动迁移
+    if settings.database_url.startswith("sqlite"):
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     # 安全提示：默认密钥仅用于本地开发，生产部署必须在 .env 中配置
     if settings.jwt_secret == "dev-secret-key-change-in-production-please":
         logger.warning(
@@ -49,6 +54,8 @@ async def lifespan(app: FastAPI):
             "否则任何人都能签发有效的登录 Token"
         )
     yield
+    # 关闭时释放数据库连接池
+    await engine.dispose()
 
 
 app = FastAPI(

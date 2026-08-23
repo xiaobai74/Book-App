@@ -16,7 +16,7 @@ import logging
 from datetime import UTC, datetime
 
 import httpx
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from app.config import settings
 from app.database import async_session

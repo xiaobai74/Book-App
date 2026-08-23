@@ -9,6 +9,7 @@ dist/
 
 # IDE
 .idea/
+.qoder/
 
 # OS
 .DS_Store
@@ -21,6 +22,25 @@ Thumbs.db
 # Generated ebook files
 backend/epub_output/
 backend/txt_output/
+
+# Debug / test scratch files
+backend/*_result*.txt
+backend/debug_extract*.txt
+backend/final_check*.txt
+backend/fix_verify*.txt
+backend/uvicorn.log
+backend/rules/*.bak-*
+*.apk
+
+# Build artifacts (桌面版 / 移动版构建产物)
+backend/dist/
+backend/build/
+desktop/release/
+frontend/android/app/build/
+frontend/android/build/
+frontend/android/.gradle/
+frontend/android/local.properties
+frontend/android/app/.cxx/
 
 # Local Claude configuration
 .claude/

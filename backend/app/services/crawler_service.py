@@ -20,7 +20,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from rules.rule_engine import RuleEngine, get_rule_engine
+from rules.rule_engine import get_rule_engine
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +30,8 @@ _USER_AGENTS = [
     f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CURRENT_UA_VERSION}.0.0.0 Safari/537.36",
     f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CURRENT_UA_VERSION}.0.0.0 Safari/537.36",
     f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{_CURRENT_UA_VERSION}.0.0.0 Safari/537.36",
-    f"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
 ]
-
-# base64 解码器 (兼容 SoNovel 中部分源站的正文加密)
-_BASE64_KEY = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
-
 
 @dataclass
 class CrawledChapter:
@@ -549,7 +545,14 @@ class CrawlerService:
         filter_element = chapter_rule.get("filterElement", "")
         filter_txt = chapter_rule.get("filterTxt", "")
 
-        soup = BeautifulSoup(html, "html.parser")
+        # 燃文等源站将正文 base64 编码后内联在
+        # <script>document.writeln(qsbs.bb('...'))</script> 中，
+        # 必须在清理 script 标签前先解码，否则正文丢失
+        if chapter_rule.get("base64Decode") and "qsbs.bb" in html:
+            decoded_html = self._decode_qsbs_scripts(html)
+            soup = BeautifulSoup(decoded_html, "html.parser")
+        else:
+            soup = BeautifulSoup(html, "html.parser")
 
         # ── 默认清理 script/style 等（全局安全清理）──────────
         for tag in soup(["script", "style", "ins", "noscript", "iframe", "form"]):
@@ -599,7 +602,11 @@ class CrawlerService:
                         for el in content_el.select(token):
                             el.unwrap()  # 去掉标签，保留文字
 
-                if chapter_rule.get("base64Decode"):
+                if chapter_rule.get("base64Decode") and "qsbs.bb" in str(content_el):
+                    # 兜底路径：正文仍以 document.writeln 内联脚本形式存在时，
+                    # 从文本中匹配 qsbs.bb('...') 片段解码。
+                    # 常规情况已在页面解析阶段完成解码（见上方 _decode_qsbs_scripts），
+                    # 此处走 _extract_text 保留 <br> 换行等段落结构
                     raw = content_el.get_text("", strip=False)
                     content_text = self._decode_base64_content(raw)
                 else:
@@ -664,6 +671,29 @@ class CrawlerService:
         if body:
             return body.get_text("\n", strip=True)
         return soup.get_text("\n", strip=True)
+
+    @staticmethod
+    def _decode_qsbs_scripts(html: str) -> str:
+        """解码 HTML 中内联的 document.writeln(qsbs.bb('...')) 片段。
+
+        燃文等源站将正文 base64 编码后通过 qsbs.bb() 输出到页面，
+        解码后替换回原位置（保留 <br /> 换行与 &nbsp; 缩进），
+        使后续选择器能正常提取正文文本。
+        """
+        def _decode(m: re.Match) -> str:
+            encoded = m.group(1)
+            try:
+                clean = re.sub(r"[^A-Za-z0-9+/=]", "", encoded)
+                raw_bytes = base64.b64decode(clean)
+                return raw_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                return m.group(0)
+
+        return re.sub(
+            r"<script[^>]*>\s*document\.writeln\(qsbs\.bb\('([^']+)'\)\);\s*</script>",
+            _decode,
+            html,
+        )
 
     def _decode_base64_content(self, raw_text: str) -> str:
         """解码 base64 编码的正文内容。
@@ -785,7 +815,7 @@ class CrawlerService:
             rule = self._engine.match_rule(source_url)
         if rule is None:
             # 回退到通用规则
-            logger.info(f"get_chapter_list: 未匹配预配置规则，使用通用规则")
+            logger.info("get_chapter_list: 未匹配预配置规则，使用通用规则")
             rule = self._engine._build_generic_rule(source_url)
 
         cookies_raw = (rule.get("search") or {}).get("cookies", "")
@@ -875,7 +905,7 @@ class CrawlerService:
             rule = self._engine.match_rule(chapter_url)
         if rule is None:
             # 回退到通用规则（与 get_chapter_list 保持一致）
-            logger.info(f"crawl_chapter: 未匹配到预配置规则，使用通用规则")
+            logger.info("crawl_chapter: 未匹配到预配置规则，使用通用规则")
             rule = self._engine._build_generic_rule(chapter_url)
 
         async with self._make_client() as client:
@@ -1021,10 +1051,6 @@ class CrawlerService:
     def list_sources(self) -> list[dict]:
         """获取所有可用源站列表。"""
         return self._engine.list_sources()
-
-    def match_source_for_url(self, url: str) -> dict | None:
-        """为给定 URL 匹配源站规则。"""
-        return self._engine.match_rule(url)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1181,4 +1207,4 @@ def sort_chapter_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
 
 
 # 全局单例（向后兼容）
-crawler = CrawlerService(delay=0.8, concurrency=5)
+crawler = CrawlerService()

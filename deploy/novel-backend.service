@@ -1,0 +1,16 @@
+[Unit]
+Description=Novel Manager FastAPI Backend
+After=network.target
+
+[Service]
+Type=simple
+User=novel
+# 让 platformdirs 把 SQLite 数据库/导出目录写到 /opt/novel-backend/.local/share/NovelManager
+Environment=HOME=/opt/novel-backend
+WorkingDirectory=/opt/novel-backend/backend
+ExecStart=/opt/novel-backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

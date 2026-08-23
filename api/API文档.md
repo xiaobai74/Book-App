@@ -1692,7 +1692,7 @@ GET /health
 
 ---
 
-> **文档版本**：v1.3 | **最后更新**：2026-08-16
+> **文档版本**：v1.3 | **最后更新**：2026-08-23
 > 
 > **v1.2/v1.3 更新内容**：
 > - 新增标记/置顶接口 `PUT /api/v1/books/{book_id}/mark`（v1.2）
@@ -1703,3 +1703,9 @@ GET /health
 > - 书架列表新增 `marked` 查询参数；响应字段补充 `has_txt`/`is_marked`/`marked_at`/`ai_summary`/`ai_summary_at`
 > - 书架内搜索 `q` 参数同时匹配书名与作者（v1.2 增强）
 > - 修正认证接口错误状态码（注册 409、登录/刷新 401）与各接口文案
+>
+> **v1.9 前端变更（接口本身未变）**：书架内搜索与 AI 语义搜索的入口从前端书架页内嵌搜索栏合并到顶部主搜索框 —— 搜索范围选「书架内」时切换普通 / AI 语义模式，点击搜索跳转 `/search?q=…&mode=shelf&ai=0|1`；`GET /api/v1/search` 与 `POST /api/v1/ai/search` 两个接口的行为保持不变。
+>
+> **v2.0 / v2.1 前端变更（接口本身未变）**：AI 搜索开关移至用户头像下拉菜单（v2.0，未开启时书架内搜索默认普通搜索；全网搜索始终搜索全部源站）；AI 开关开启后书架内搜索按查询意图自动选择搜索方式（v2.1：自然语言描述走 `POST /api/v1/ai/search`，书名/作者走 `GET /api/v1/search`，结果页可一次性手动切换）。相关接口行为均保持不变。
+>
+> **v2.2 / v2.3 多端适配（接口本身未变）**：① Android 移动版（Capacitor 8）与 Windows 桌面版（Electron + PyInstaller）共用同一套 API；桌面版后端由 Electron 主进程拉起并监听随机动态端口，移动版连接云端部署的后端（`frontend/src/config.ts` 的 `MOBILE_API_BASE`），前端 `http.ts` 按运行环境自动选择 `baseURL` 并导出 `API_BASE_URL` 供下载链接拼接。② 后端数据库改为 MySQL / SQLite 双引擎：桌面版默认 SQLite（用户数据目录 `%AppData%/NovelManager/novel_manager.db`，首次启动自动建表），`.env` 中 `DATABASE_URL` 可覆盖回 MySQL（Web 部署）。③ 桌面版 `.epub`/`.txt` 导出目录迁至用户数据目录（`%AppData%/NovelManager/epub_output|txt_output`），下载接口 URL 与响应格式不变。④ CORS 允许本地动态端口与 `file://`/`capacitor://` 源（桌面与移动 WebView 环境）。

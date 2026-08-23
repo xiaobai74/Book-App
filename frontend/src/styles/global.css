@@ -2,6 +2,7 @@
    小说管理App · 全局样式
    v1.4 — 冷暖双基调设计系统（冷色为骨架 · 暖色为点缀）
    v1.5 — 移动端适配（断点 / 安全区 / 触控目标 / 对话框）
+   v1.7 — 全局水墨雪景背景（App.vue 挂载 InkSnowBackground，雪花动效豁免）
    对比度全部满足 WCAG 2.2 AA · 极简卡片式布局
    ═══════════════════════════════════════════════════════ */
 
@@ -68,12 +69,23 @@ html { -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
-  background: var(--bg);
+  /* 全局水墨雪景背景层（App.vue，z-index: 0）之上承载页面内容；
+     各页面背景一律透明，让雪景透过内容区与卡片间隙（v1.7） */
+  background: #e9eef2;
   color: var(--fg);
   font-family: var(--font-body);
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+/* ─── 全局背景分层（v1.7，v1.8 主题背景层） ────────────
+   ① ThemeBackground 背景层     z-index: 0（fixed，不可交互）
+   ② #app-main 内容层           z-index: 1（背景透明）   */
+#app-main {
+  position: relative;
+  z-index: 1;
+  background: transparent;
 }
 
 a { color: var(--accent); text-decoration: none; }
@@ -110,7 +122,9 @@ h1, h2, h3, h4 { margin: 0; }
 /* ─── 动效策略（PRD 3.1：极简，禁用装饰性动画） ─────────
    仅允许：
    ① 加载指示动画（全局 keyframes 豁免，见下）
-   ② ≤150ms 的 hover/active 即时反馈微交互（transition 豁免） */
+   ② ≤150ms 的 hover/active 即时反馈微交互（transition 豁免）
+   ③ 全局水墨雪景的雪花飘落（v1.7，InkSnowBackground 组件元素，
+      位于 App.vue 全局挂载，豁免见下） */
 *, *::before, *::after {
   animation: none !important;
 }
@@ -165,6 +179,41 @@ h1, h2, h3, h4 { margin: 0; }
 
 .loading-bar::after {
   animation: loading-slide 1.4s ease-in-out infinite !important;
+}
+
+/* 雪花飘落（v1.7：全局水墨雪景背景，InkSnowBackground 使用，属第 ③ 类豁免）。
+   keyframes 按项目惯例放全局：组件内 scoped keyframes 会被 Vue 重命名，
+   且全局 `animation: none` 规则会一并禁用，故以 !important 声明豁免。
+   飘落节奏由组件通过 --ink-fall-dur / --ink-fall-delay 定制 */
+@keyframes ink-snow-fall {
+  0%   { transform: translate3d(0, 0, 0); opacity: 0; }
+  6%   { opacity: 0.8; }
+  50%  { transform: translate3d(-10px, 48vh, 0); opacity: 0.65; }
+  94%  { opacity: 0.75; }
+  100% { transform: translate3d(8px, 96vh, 0); opacity: 0; }
+}
+
+.ink-snowflake {
+  animation: ink-snow-fall var(--ink-fall-dur, 22s) linear var(--ink-fall-delay, 0s) infinite !important;
+}
+
+/* 星光闪烁（v1.8：星夜场景粒子，ParticleLayer 使用，属第 ③ 类豁免）。
+   闪烁节奏由组件通过 --ink-fall-dur / --ink-fall-delay 定制（3~9s 慢闪） */
+@keyframes ink-star-twinkle {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 0.95; }
+}
+
+.is-star-mode .ink-snowflake {
+  animation: ink-star-twinkle var(--ink-fall-dur, 5s) ease-in-out var(--ink-fall-delay, 0s) infinite !important;
+}
+
+/* 动效偏好（WCAG 2.3.3）：减少动效时雪花/星光静止（保留淡色点缀，画面仍是完整场景） */
+@media (prefers-reduced-motion: reduce) {
+  .ink-snowflake {
+    animation: none !important;
+    opacity: 0.35;
+  }
 }
 
 /* ─── Layout ───────────────────────────────────────── */
@@ -280,7 +329,6 @@ h1, h2, h3, h4 { margin: 0; }
   font-size: 18px;
   font-weight: 700;
   color: var(--fg);
-  cursor: pointer;
 }
 
 .topnav .logo-area svg {
@@ -302,22 +350,23 @@ h1, h2, h3, h4 { margin: 0; }
   background: linear-gradient(90deg, var(--accent) 0%, var(--accent-ice) 55%, var(--accent-warm) 100%);
 }
 
-/* ─── Auth Pages ───────────────────────────────────── */
+/* ─── Auth Pages（v1.7：页面背景由 App.vue 全局水墨雪景层提供） ── */
 .auth-shell {
   min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 32px;
-  background: var(--bg);
+  background: transparent;   /* 透出全局水墨雪景背景 */
 }
 
 .auth-card {
-  background: var(--surface);
+  background: rgba(255, 255, 255, 0.92);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 40px 36px;
   width: 100%;
   max-width: 400px;
+  box-shadow: 0 8px 32px rgba(30, 41, 59, 0.08);   /* 卡片自背景层浮起 */
 }
 
 .auth-card h1 {

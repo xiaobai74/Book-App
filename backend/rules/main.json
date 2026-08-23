@@ -51,7 +51,7 @@
     "name": "书海阁小说网",
     "comment": "搜索结果页有反爬机制，跳转错误页。抓取可用",
     "search": {
-      "disabled": true,
+      "disabled": false,
       "url": "https://www.shuhaige.net/search.html",
       "method": "post",
       "data": "{searchkey: %s, searchtype: all}",
@@ -88,7 +88,7 @@
     "name": "梦书中文",
     "comment": "原域名 mcxs.info 已重定向到 mcxs.la。搜索已禁用（站内无数据），仅抓取可用",
     "search": {
-      "disabled": true,
+      "disabled": false,
       "url": "http://www.mcxs.la/search.html",
       "method": "post",
       "data": "{name: %s}",
@@ -262,7 +262,8 @@
       "author": "span.zuo > a",
       "category": "span.lei > a",
       "latestChapter": "span.jie > a",
-      "lastUpdateTime": "span.time"
+      "lastUpdateTime": "span.time",
+      "disabled": true
     },
     "book": {
       "url": "https://www.biquge365.net/book/(.*?)/"
@@ -284,13 +285,12 @@
     "url": "https://www.ranwen8.cc/",
     "name": "燃文小说网",
     "comment": "网站连接超时，已全面禁用。正文段落被base64编码",
-    "disabled": true,
     "search": {
-      "disabled": true,
+      "disabled": false,
       "url": "https://www.ranwen8.cc/search.html",
       "method": "post",
       "data": "{submit: 搜索, s: %s}",
-      "result": "body > div.padding > div > table > tbody > tr",
+      "result": "body > div.padding > div > table > tr",
       "bookName": "td:nth-child(1) > a",
       "author": "td:nth-child(3)",
       "latestChapter": "td:nth-child(2) > a",

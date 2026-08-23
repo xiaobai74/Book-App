@@ -1,5 +1,16 @@
 <!-- ═══════════════════════════════════════════════════════════════
      小说管理App · 统一搜索页面（v2.0：书架内搜索 + 全网源站搜索）
+     v1.9 — 书架内 tab 支持普通 / AI 语义双模式：模式状态与
+            TopNav 主搜索框共享（shelfSearch store），AI 结果
+            展示匹配分数与原因（不分页），普通模式维持服务端分页
+     v2.0 — AI 搜索开关（头像菜单）开启时，书架内 tab 下方显示
+            普通 / AI 切换；未开启则书架内搜索默认普通搜索；
+            全网搜索移除源站下拉筛选（始终搜索全部源站）
+     v2.1 — 智能搜索模式路由：AI 开关开启后按查询意图自动选择
+            搜索方式（自然语言描述 → AI 语义，书名/作者 → 普通），
+            移除手动模式切换；结果区显示「自动使用 xx 搜索」标识，
+            并提供一次性改用另一种方式重新搜索；全网搜索 tab 左上角
+            原「搜索：」标题位置改为「← 返回书架」按钮
      ═══════════════════════════════════════════════════════════════ -->
 <template>
   <div>
@@ -7,9 +18,19 @@
 
     <section class="section">
       <div class="container">
-        <!-- 搜索栏 -->
+        <!-- 搜索栏：全网搜索 tab 显示返回书架按钮，书架内 tab 显示搜索标题 -->
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px">
-          <h2 style="font-size:clamp(22px,3vw,28px);font-weight:600">
+          <el-button
+            v-if="searchMode === 'web'"
+            text
+            size="small"
+            class="back-to-shelf-btn"
+            aria-label="返回书架"
+            @click="$router.push('/shelf')"
+          >
+            ← 返回书架
+          </el-button>
+          <h2 v-else style="font-size:clamp(22px,3vw,28px);font-weight:600">
             {{ hasSearched ? `搜索："${currentQ}"` : '搜索小说' }}
           </h2>
           <div class="search-controls" style="display:flex;align-items:center;gap:8px;flex:0 1 480px">
@@ -18,40 +39,27 @@
               <el-radio-button value="shelf">书架内</el-radio-button>
               <el-radio-button value="web">全网搜索</el-radio-button>
             </el-radio-group>
-            <!-- 源站筛选（仅全网搜索显示） -->
-            <el-select
-              v-if="searchMode === 'web'"
-              v-model="selectedSource"
-              placeholder="全部源站"
-              size="small"
-              clearable
-              class="source-select"
-              style="width:140px;flex-shrink:0"
-            >
-              <el-option label="全部源站" :value="undefined" />
-              <el-option
-                v-for="s in booksStore.sources"
-                :key="s.id"
-                :label="s.name"
-                :value="s.id"
-              />
-            </el-select>
             <el-input
               v-model="searchQuery"
-              :placeholder="searchMode === 'web' ? '输入书名或作者，全网搜索…' : '在书架中按书名搜索…'"
+              :placeholder="queryPlaceholder"
               :prefix-icon="Search"
               clearable
               class="query-input"
               @keyup.enter="doSearch"
             >
               <template #append>
-                <el-button :icon="Search" :loading="isSearching" aria-label="搜索" @click="doSearch" />
+                <el-button
+                  :icon="Search"
+                  :loading="isSearching || (searchMode === 'shelf' && aiActive && shelfSearch.aiSearching)"
+                  aria-label="搜索"
+                  @click="doSearch"
+                />
               </template>
             </el-input>
           </div>
         </div>
 
-        <!-- ── 书架内搜索 tab ──────────────────────────────── -->
+        <!-- ── 书架内搜索 tab（v1.9：普通搜索 + AI 语义搜索双模式） ── -->
         <template v-if="searchMode === 'shelf'">
           <!-- 初始状态 -->
           <div v-if="!hasSearched" class="empty-state">
@@ -61,52 +69,109 @@
                 <path d="m21 21-4.35-4.35"/>
               </svg>
             </div>
-            <p>在已有书架中按书名模糊搜索</p>
+            <p v-if="shelfSearch.aiEnabled">输入书名、作者，或自然语言描述想找的书，自动匹配搜索方式</p>
+            <p v-else>在已有书架中按书名或作者模糊搜索</p>
           </div>
 
-          <!-- 加载中 -->
-          <div v-else-if="booksStore.loading" class="empty-state">
+          <!-- AI 搜索进度提示（aria-live：搜索状态由读屏软件播报） -->
+          <div v-else-if="aiActive && shelfSearch.aiSearching" class="empty-state">
+            <div class="ai-search-progress" aria-live="polite">
+              <span class="ai-search-dots">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+              </span>
+              <span class="ai-search-text">AI 正在理解"{{ currentQ }}"的含义，在书架中匹配相关书籍…</span>
+            </div>
+          </div>
+
+          <!-- 加载中（普通模式服务端搜索） -->
+          <div v-else-if="!aiActive && booksStore.loading" class="empty-state">
             <div class="loading-bar"></div>
             <p style="margin-top:12px">正在搜索中…</p>
           </div>
 
-          <!-- 无结果 -->
-          <div v-else-if="booksStore.searchResults.length === 0" class="empty-state">
-            <p>书架中未找到相关小说，试试<a href="#" @click.prevent="searchMode = 'web'" style="color:var(--accent-ice);text-decoration:underline">全网搜索</a></p>
+          <!-- 无结果（普通 / AI 分开渲染：AI 结果带匹配分数与原因，不参与分页） -->
+          <div v-else-if="shelfResultList.length === 0" class="empty-state">
+            <template v-if="aiActive">
+              <p>书架中没有找到符合"{{ currentQ }}"语义的书籍，试试<a href="#" @click.prevent="searchMode = 'web'" style="color:var(--accent-ice);text-decoration:underline">全网搜索</a></p>
+              <el-button size="small" text type="primary" style="margin-top:12px" @click="switchSearchMethod">
+                改用普通搜索
+              </el-button>
+            </template>
+            <template v-else>
+              <p>书架中未找到相关小说，试试<a href="#" @click.prevent="searchMode = 'web'" style="color:var(--accent-ice);text-decoration:underline">全网搜索</a></p>
+              <el-button v-if="shelfSearch.aiEnabled" size="small" text type="primary" style="margin-top:12px" @click="switchSearchMethod">
+                改用 🤖 AI 语义搜索
+              </el-button>
+            </template>
           </div>
 
-          <!-- 搜索结果 -->
-          <div v-else class="grid-3">
-            <div v-for="book in booksStore.searchResults" :key="book.id" class="search-card">
-              <div style="display:flex;align-items:flex-start;gap:16px">
-                <router-link :to="`/detail/${book.id}`" style="flex-shrink:0">
-                  <BookCoverSmall :title="book.title" />
-                </router-link>
-                <div style="flex:1">
-                  <div class="search-title">{{ book.title }}</div>
-                  <div class="search-author">{{ book.author }} · {{ book.chapter_count }} 章</div>
-                  <div style="margin-top:4px">
-                    <StatusBadge :status="book.status" />
-                  </div>
-                  <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
-                    <el-button size="small" type="primary" @click="$router.push(`/detail/${book.id}`)">
-                      查看详情
-                    </el-button>
-                    <el-button
-                      v-if="book.has_epub || book.has_txt"
-                      size="small"
-                      @click="downloadBook(book.id, book.has_epub ? 'epub' : 'txt', `${book.title}-${book.author}`)"
-                    >
-                      下载
-                    </el-button>
+          <!-- 搜索结果（AI 模式：卡片列表；普通模式：三列网格）
+               v2.1：结果上方显示「自动使用 xx 搜索」标识，可一次性改用另一种方式 -->
+          <template v-else>
+            <div v-if="aiActive" class="ai-auto-indicator" role="status">
+              <span>🤖 自动使用 AI 语义搜索</span>
+              <el-button size="small" text type="primary" @click="switchSearchMethod">改用普通搜索</el-button>
+            </div>
+            <div v-else-if="shelfSearch.aiEnabled" class="ai-auto-indicator" role="status">
+              <span>已使用普通搜索（书名 / 作者）</span>
+              <el-button size="small" text type="primary" @click="switchSearchMethod">改用 🤖 AI 语义搜索</el-button>
+            </div>
+            <div v-if="aiActive" class="stack" style="gap:12px">
+              <div v-for="r in shelfSearch.aiResults" :key="r.book_id" class="search-card">
+                <div style="display:flex;align-items:flex-start;gap:16px">
+                  <router-link :to="`/detail/${r.book_id}`" style="flex-shrink:0">
+                    <BookCoverSmall :title="r.title" />
+                  </router-link>
+                  <div style="flex:1;min-width:0">
+                    <div class="search-title">{{ r.title }}</div>
+                    <div class="search-author">{{ r.author }}</div>
+                    <div class="ai-match-info">
+                      <span class="ai-match-score">{{ r.score }}%</span>
+                      <span class="ai-match-reason">{{ r.match_reason }}</span>
+                    </div>
+                    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+                      <el-button size="small" type="primary" @click="$router.push(`/detail/${r.book_id}`)">
+                        查看详情
+                      </el-button>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
+            <div v-else class="grid-3">
+              <div v-for="book in booksStore.searchResults" :key="book.id" class="search-card">
+                <div style="display:flex;align-items:flex-start;gap:16px">
+                  <router-link :to="`/detail/${book.id}`" style="flex-shrink:0">
+                    <BookCoverSmall :title="book.title" />
+                  </router-link>
+                  <div style="flex:1">
+                    <div class="search-title">{{ book.title }}</div>
+                    <div class="search-author">{{ book.author }} · {{ book.chapter_count }} 章</div>
+                    <div style="margin-top:4px">
+                      <StatusBadge :status="book.status" />
+                    </div>
+                    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+                      <el-button size="small" type="primary" @click="$router.push(`/detail/${book.id}`)">
+                        查看详情
+                      </el-button>
+                      <el-button
+                        v-if="book.has_epub || book.has_txt"
+                        size="small"
+                        @click="downloadBook(book.id, book.has_epub ? 'epub' : 'txt', `${book.title}-${book.author}`)"
+                      >
+                        下载
+                      </el-button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
 
-          <!-- 分页 -->
-          <div v-if="booksStore.searchPagination.total_pages > 1" class="pagination">
+          <!-- 分页（仅普通模式，AI 结果一次性返回不参与分页） -->
+          <div v-if="!aiActive && booksStore.searchPagination.total_pages > 1" class="pagination">
             <el-pagination
               v-model:current-page="searchPage"
               :page-size="booksStore.searchPagination.page_size"
@@ -222,13 +287,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { useBooksStore } from '@/stores'
+import { useBooksStore, useShelfSearchStore } from '@/stores'
 import { getDownloadUrl, addBook, getBooks } from '@/api/books'
 import type { SearchResultItem } from '@/types'
+import { detectQueryIntent } from '@/lib/queryIntent'
 import TopNav from '@/components/TopNav.vue'
 import BookCoverSmall from '@/components/BookCoverSmall.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
@@ -236,13 +302,14 @@ import StatusBadge from '@/components/StatusBadge.vue'
 const route = useRoute()
 const router = useRouter()
 const booksStore = useBooksStore()
+/** v1.9：书架内 AI 语义搜索状态与 TopNav 主搜索框共享 */
+const shelfSearch = useShelfSearchStore()
 
 const searchMode = ref<'shelf' | 'web'>('web')
 const searchQuery = ref('')
 const hasSearched = ref(false)
 const currentQ = ref('')
 const searchPage = ref(1)
-const selectedSource = ref<number | undefined>(undefined)
 const addingIdx = ref<number | null>(null)
 const addedBookIds = reactive<Record<number, string>>({})
 
@@ -251,6 +318,26 @@ const shelfUrls = ref<Set<string>>(new Set())
 
 const isSearching = ref(false)
 
+/** v2.0：AI 开关（头像菜单）开启 + 书架内选择 AI 模式时，AI 语义搜索才生效 */
+const aiActive = computed(() => shelfSearch.aiEnabled && shelfSearch.aiMode)
+
+/** 输入框占位文案：书架内按开关状态区分自动识别 / 普通搜索（v2.1） */
+const queryPlaceholder = computed(() => {
+  if (searchMode.value === 'shelf') {
+    return shelfSearch.aiEnabled
+      ? '输入书名、作者或自然语言描述…'
+      : '在书架中按书名或作者搜索…'
+  }
+  return '输入书名或作者，全网搜索…'
+})
+
+/** 书架内结果列表：AI 模式用语义搜索结果（仅长度判断），普通模式用服务端分页结果 */
+const shelfResultList = computed(() =>
+  aiActive.value
+    ? shelfSearch.aiResults.map((r) => ({ id: r.book_id, title: r.title, author: r.author }))
+    : booksStore.searchResults
+)
+
 onMounted(async () => {
   // 读取 URL 参数中的搜索模式
   const modeParam = (route.query.mode as string) || ''
@@ -258,6 +345,14 @@ onMounted(async () => {
     searchMode.value = 'shelf'
   } else {
     searchMode.value = 'web'
+  }
+  // v2.1：书架内搜索方式由顶栏按查询意图识别后携带 ai 参数进入本页
+  //（仅 AI 开关开启时读取 ai 参数；缺省沿用上次选择）
+  if (modeParam === 'shelf') {
+    const aiParam = (route.query.ai as string) === '1'
+    shelfSearch.aiMode = shelfSearch.aiEnabled ? aiParam : false
+    // 进入搜索页后恢复自动识别：下次新查询重新判断意图，不受上次手动覆盖影响
+    shelfSearch.aiModeSource = 'auto'
   }
 
   // 初始化：获取源站列表 + 当前书架快照
@@ -313,14 +408,30 @@ async function doSearch() {
 
   try {
     if (searchMode.value === 'shelf') {
-      searchPage.value = 1
-      await booksStore.search(q, searchPage.value)
+      // v2.1：按查询意图自动选择搜索方式（用户在结果页手动切换后沿用其选择）
+      if (shelfSearch.aiModeSource !== 'manual') {
+        shelfSearch.aiMode = shelfSearch.aiEnabled && detectQueryIntent(q) === 'ai'
+      }
+      if (aiActive.value) {
+        // AI 语义搜索：状态与结果在共享 store，加载态由 aiSearching 驱动
+        await shelfSearch.performAiSearch(q)
+      } else {
+        searchPage.value = 1
+        await booksStore.search(q, searchPage.value)
+      }
     } else {
-      await booksStore.searchExternal(q, selectedSource.value)
+      // v2.0：全网搜索不再按源站筛选，始终搜索全部源站
+      await booksStore.searchExternal(q)
     }
   } finally {
     isSearching.value = false
   }
+}
+
+/** v2.1：结果页一次性切换搜索方式（AI ⇄ 普通）并重新搜索 */
+function switchSearchMethod() {
+  shelfSearch.overrideAiMode(!shelfSearch.aiMode)
+  doSearch()
 }
 
 async function handleShelfSearchPageChange(page: number) {
@@ -398,9 +509,45 @@ watch(searchMode, () => {
     doSearch()
   }
 })
+
+// v2.1：AI 搜索开关（头像菜单）变化后，书架内若已有关键词则按新状态重新搜索
+watch(
+  () => shelfSearch.aiEnabled,
+  (enabled) => {
+    if (!enabled) {
+      // 关闭开关：复位 AI 模式与结果，避免旧语义结果残留
+      shelfSearch.aiMode = false
+      shelfSearch.aiModeSource = 'auto'
+      shelfSearch.resetAiSearch()
+    }
+    if (searchMode.value === 'shelf' && hasSearched.value && currentQ.value) {
+      doSearch()
+    }
+  }
+)
+
+// v2.1：编辑查询词后恢复自动识别——结果页的手动切换只对当前查询生效一次，
+// 输入新内容时重新按意图判断搜索方式
+watch(searchQuery, () => {
+  if (searchQuery.value.trim() !== currentQ.value) {
+    shelfSearch.aiModeSource = 'auto'
+  }
+})
 </script>
 
 <style scoped>
+/* 全网搜索 tab 左上角返回书架按钮（替代原搜索标题位置） */
+.back-to-shelf-btn {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+  min-height: 32px;
+}
+
+.back-to-shelf-btn:hover {
+  color: var(--accent);
+}
+
 .grid-3 {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -436,6 +583,82 @@ watch(searchMode, () => {
   font-size: 12px;
 }
 
+/* ── v2.1：自动识别标识（结果上方提示当前搜索方式 + 一次性切换） ── */
+.ai-auto-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.ai-auto-indicator :deep(.el-button) {
+  padding: 2px 4px;
+  margin-left: 0;
+}
+
+/* ── v1.9：AI 语义搜索结果与进度提示（样式对齐书架页） ── */
+.ai-match-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.ai-match-score {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 22px;
+  padding: 0 6px;
+  background: var(--warm-soft);
+  color: var(--warm-fg);
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  border-radius: 4px;
+}
+
+.ai-match-reason {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.ai-search-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 10px 14px;
+  background: var(--accent-ice-soft, rgba(100, 180, 255, 0.06));
+  border-radius: var(--radius-md);
+  border: 1px solid var(--accent-ice-soft, rgba(100, 180, 255, 0.15));
+}
+
+.ai-search-text {
+  font-size: 13px;
+  color: var(--accent-ice);
+  flex: 1;
+}
+
+.ai-search-dots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ai-search-dots .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-ice);
+}
+
 /* ── v1.5 移动端适配 ────────────────────────────── */
 @media (max-width: 640px) {
   /* 搜索控件整行堆叠：标签切换一行，源站 + 输入框一行 */
@@ -454,9 +677,6 @@ watch(searchMode, () => {
   .mode-group :deep(.el-radio-button__inner) {
     width: 100%;
     text-align: center;
-  }
-  .source-select {
-    flex: 0 1 120px;
   }
   .query-input {
     flex: 1;

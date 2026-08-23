@@ -1,10 +1,17 @@
 /* ═══════════════════════════════════════════════════════
    小说管理App · 路由配置
    ═══════════════════════════════════════════════════════ */
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, createWebHashHistory } from 'vue-router'
+
+// 原生容器环境（Electron 桌面 / Capacitor 移动）用 hash 模式，Web 用 history 模式
+const isNative =
+  !!(window as any).electronAPI?.isElectron ||
+  !!(window as any).Capacitor?.isNative ||
+  window.location.origin === 'http://localhost' ||
+  window.location.origin === 'https://localhost'
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: isNative ? createWebHashHistory() : createWebHistory(),
   routes: [
     {
       path: '/',
