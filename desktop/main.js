@@ -26,18 +26,18 @@ function findFreePort() {
   })
 }
 
-/** 后端 exe 路径：打包版在 resources/backend，开发版在 backend/dist */
+/** 后端 exe 路径：打包版在 resources/backend，开发版在仓库的 backend/dist（desktop 与 backend 同级） */
 function getBackendExePath() {
   return app.isPackaged
     ? path.join(process.resourcesPath, 'backend', 'novel-backend.exe')
-    : path.join(__dirname, '..', '..', 'backend', 'dist', 'novel-backend.exe')
+    : path.join(__dirname, '..', 'backend', 'dist', 'novel-backend.exe')
 }
 
-/** 前端入口页面：打包版在 resources/frontend，开发版在 frontend/dist */
+/** 前端入口页面：打包版在 resources/frontend，开发版在仓库的 frontend/dist（desktop 与 frontend 同级） */
 function getFrontendIndexPath() {
   return app.isPackaged
     ? path.join(process.resourcesPath, 'frontend', 'index.html')
-    : path.join(__dirname, '..', '..', 'frontend', 'dist', 'index.html')
+    : path.join(__dirname, '..', 'frontend', 'dist', 'index.html')
 }
 
 /** 启动 Python 后端子进程 */

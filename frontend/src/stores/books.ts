@@ -15,7 +15,7 @@ import {
   getCrawlStatus,
   getBookDetail
 } from '@/api/books'
-import type { Book, BookDetail, CrawlStatus, AddBookRequest, PaginationMeta, SearchResultItem, SourceItem } from '@/types'
+import type { Book, BookDetail, CrawlStatus, AddBookRequest, PaginationMeta, SearchResultItem, SourceItem, ChapterSummary } from '@/types'
 
 /** 客户端搜索阈值：书架总量超过此值自动切换为服务端搜索 */
 const CLIENT_SEARCH_THRESHOLD = 200
@@ -58,7 +58,68 @@ export const useBooksStore = defineStore('books', () => {
   /** 搜索模式：client=客户端过滤, server=后端搜索 */
   const searchMode = ref<'client' | 'server'>('client')
 
+  // ── v2.2 新增：书架缓存状态（切页返回零等待） ─────────────
+  /** 书架数据是否已加载过（store 生命周期内持久） */
+  const shelfLoaded = ref(false)
+  /** 静默后台刷新是否进行中（不打断已有内容的展示） */
+  const silentRefreshing = ref(false)
+  /** 上次全量加载时间戳（用于节流后台刷新） */
+  let lastLoadAt = 0
+  /** 后台静默刷新的最短间隔（毫秒） */
+  const SILENT_REFRESH_INTERVAL = 60 * 1000
+
   const bookCount = computed(() => pagination.value.total)
+
+  // ── v2.3 新增：详情页缓存（书架⇄详情⇄阅读器切换零等待） ──────
+  /** 按书缓存详情基础信息 + 章节列表 */
+  const detailCache = new Map<string, { book: Book; chapters: ChapterSummary[]; loadedAt: number }>()
+  /** AI 摘要缓存（仅缓存已生成完成的，重新生成时覆写） */
+  const summaryCache = new Map<string, { text: string; at: string | null }>()
+  /** 详情缓存有效期（抓取完成/标记等变更会本地更新缓存，过期仅保险用） */
+  const DETAIL_CACHE_TTL = 10 * 60 * 1000
+
+  /** 从书架缓存查找书籍基础信息（详情页即时展示用） */
+  function findShelfBook(bookId: string): Book | null {
+    return allBooks.value.find(b => b.id === bookId)
+      || books.value.find(b => b.id === bookId)
+      || null
+  }
+
+  /** 读取详情缓存（过期返回 null） */
+  function getCachedDetail(bookId: string): { book: Book; chapters: ChapterSummary[] } | null {
+    const c = detailCache.get(bookId)
+    if (c && Date.now() - c.loadedAt < DETAIL_CACHE_TTL) return c
+    return null
+  }
+
+  /** 写入详情缓存 */
+  function cacheDetail(bookId: string, book: Book, chapters: ChapterSummary[]) {
+    detailCache.set(bookId, { book, chapters, loadedAt: Date.now() })
+  }
+
+  /** 失效详情缓存（删除书籍等场景） */
+  function invalidateDetail(bookId: string) {
+    detailCache.delete(bookId)
+    summaryCache.delete(bookId)
+  }
+
+  /** 将变更后的书籍同步回书架各列表（详情页抓取完成/标记等变更） */
+  function upsertShelfBook(updated: Book) {
+    for (const list of [books, allBooks, filteredBooks, searchResults]) {
+      const idx = list.value.findIndex(b => b.id === updated.id)
+      if (idx >= 0) list.value[idx] = { ...list.value[idx], ...updated }
+    }
+  }
+
+  /** 读取 AI 摘要缓存 */
+  function getCachedSummary(bookId: string): { text: string; at: string | null } | null {
+    return summaryCache.get(bookId) ?? null
+  }
+
+  /** 写入 AI 摘要缓存 */
+  function cacheSummary(bookId: string, text: string, at: string | null) {
+    summaryCache.set(bookId, { text, at })
+  }
 
   /** 加载书架（分页） */
   async function fetchBooks(page = 1, page_size = 20, marked: boolean | null = null) {
@@ -74,9 +135,49 @@ export const useBooksStore = defineStore('books', () => {
     }
   }
 
-  /** v1.2 新增：全量加载书籍缓存（用于客户端快速检索） */
-  async function fetchAllBooks(marked: boolean | null = null) {
-    loading.value = true
+  /**
+   * v2.2 新增：书架统一加载入口（缓存优先）
+   * - 无缓存：首次加载，展示 loading 骨架
+   * - 有缓存：立即返回（页面瞬间恢复），距上次加载超过阈值时
+   *   后台静默刷新（silentRefreshing），数据回来自动替换，用户无感知
+   * force=true 时忽略节流强制后台刷新（不阻塞展示）
+   */
+  async function ensureShelf(force = false) {
+    if (shelfLoaded.value && lastLoadAt > 0) {
+      const stale = Date.now() - lastLoadAt > SILENT_REFRESH_INTERVAL
+      if (!force && !stale) return
+      // 后台静默刷新：不置 loading，页面继续展示旧数据
+      silentRefreshing.value = true
+      try {
+        await fetchAllBooks(null, true)
+        // 服务端模式下同步刷新首页分页数据（展示列表来源）
+        if (searchMode.value === 'server') {
+          await fetchBooks(pagination.value.page, pagination.value.page_size, null)
+        }
+      } catch { /* 静默刷新失败保留旧数据 */ }
+      finally {
+        silentRefreshing.value = false
+      }
+      return
+    }
+    // 首次加载：全量缓存 + 首页分页数据（服务端模式展示用）
+    try {
+      await fetchAllBooks(null)
+    } catch {
+      // 全量加载失败时回退——至少保证分页数据能用
+      searchMode.value = 'server'
+    }
+    try {
+      await fetchBooks(1, 20, null)
+    } catch {
+      // 分页加载失败时静默处理，页面显示空状态
+    }
+    shelfLoaded.value = true
+  }
+
+  /** v1.2 新增：全量加载书籍缓存（用于客户端快速检索）；silent=true 时不触发 loading（后台静默刷新用） */
+  async function fetchAllBooks(marked: boolean | null = null, silent = false) {
+    if (!silent) loading.value = true
     try {
       const { data } = await getBooks(1, CLIENT_SEARCH_THRESHOLD, marked)
       if (data.success) {
@@ -84,9 +185,10 @@ export const useBooksStore = defineStore('books', () => {
         filteredBooks.value = [...allBooks.value]
         // 书架总量超过阈值 → 服务端搜索；未超过 → 恢复客户端快速检索
         searchMode.value = (data.meta?.total || 0) > CLIENT_SEARCH_THRESHOLD ? 'server' : 'client'
+        lastLoadAt = Date.now()
       }
     } finally {
-      loading.value = false
+      if (!silent) loading.value = false
     }
   }
 
@@ -130,9 +232,9 @@ export const useBooksStore = defineStore('books', () => {
   /** v1.2 新增：是否处于客户端搜索模式 */
   const isClientMode = computed(() => searchMode.value === 'client')
 
-  /** 加载书籍详情 */
-  async function fetchBookDetail(bookId: string) {
-    loading.value = true
+  /** 加载书籍详情；silent=true 时不触发全局 loading（详情页缓存优先时用） */
+  async function fetchBookDetail(bookId: string, silent = false) {
+    if (!silent) loading.value = true
     try {
       const { data } = await getBookDetail(bookId)
       if (data.success && data.data) {
@@ -141,18 +243,20 @@ export const useBooksStore = defineStore('books', () => {
       }
       return null
     } finally {
-      loading.value = false
+      if (!silent) loading.value = false
     }
   }
 
-  /** 添加书籍 */
+  /** 添加书籍（v2.2：本地同步三个列表，不再额外发分页请求） */
   async function addBook(payload: AddBookRequest) {
     const { data } = await addBookApi(payload)
     if (data.success && data.data) {
       // 同步更新 allBooks 缓存（按书架优先级排序，保持标记置顶规则）
       allBooks.value = [...allBooks.value, data.data].sort(compareBooks)
       filteredBooks.value = [...allBooks.value]
-      await fetchBooks(pagination.value.page)
+      // 分页列表本地插入首位（与后端「标记置顶→时间倒序」一致，新书未标记按时间最新）
+      books.value = [data.data, ...books.value]
+      pagination.value.total += 1
       return data.data
     }
     throw new Error(data.error || '添加失败')
@@ -169,6 +273,8 @@ export const useBooksStore = defineStore('books', () => {
       // 同步更新服务端搜索结果（可能从搜索结果列表删除）
       searchResults.value = searchResults.value.filter((b) => b.id !== bookId)
       pagination.value.total = Math.max(0, pagination.value.total - 1)
+      // v2.3：同步清理详情/摘要缓存
+      invalidateDetail(bookId)
     } else {
       throw new Error(data.error || '删除失败')
     }
@@ -235,15 +341,8 @@ export const useBooksStore = defineStore('books', () => {
   async function startCrawl(bookId: string) {
     const { data } = await triggerCrawl(bookId)
     if (data.success && data.data) {
-      // 更新列表中对应书籍
-      const idx = books.value.findIndex((b) => b.id === bookId)
-      if (idx >= 0) books.value[idx] = data.data
-      // 同步更新 allBooks
-      const allIdx = allBooks.value.findIndex((b) => b.id === bookId)
-      if (allIdx >= 0) allBooks.value[allIdx] = data.data
-      // 同步更新 filteredBooks
-      const filteredIdx = filteredBooks.value.findIndex((b) => b.id === bookId)
-      if (filteredIdx >= 0) filteredBooks.value[filteredIdx] = data.data
+      // 同步书架各列表
+      upsertShelfBook(data.data)
       if (currentBook.value?.id === bookId) {
         currentBook.value = { ...currentBook.value, ...data.data }
       }
@@ -281,6 +380,18 @@ export const useBooksStore = defineStore('books', () => {
     filteredBooks,
     searchMode,
     isClientMode,
+    // v2.2 新增：书架缓存
+    shelfLoaded,
+    silentRefreshing,
+    ensureShelf,
+    // v2.3 新增：详情页缓存
+    findShelfBook,
+    getCachedDetail,
+    cacheDetail,
+    invalidateDetail,
+    upsertShelfBook,
+    getCachedSummary,
+    cacheSummary,
     fetchBooks,
     fetchAllBooks,
     clientFilter,

@@ -19,6 +19,28 @@ export function coverClass(title: string): string {
   return `c${title.charCodeAt(0) % 8}`
 }
 
+/** HTML 转义（注册/登录/搜索高亮等 v-html 场景防注入） */
+export function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/** 密码复杂度校验（Element Plus validator 签名）：8-64 位且同时包含字母和数字 */
+export const passwordComplexityValidator = (_rule: any, value: string, callback: Function) => {
+  if (value.length < 8 || value.length > 64) {
+    callback(new Error('密码长度需为 8-64 位'))
+  } else if (!/[a-zA-Z]/.test(value)) {
+    callback(new Error('密码需包含至少一个字母'))
+  } else if (!/[0-9]/.test(value)) {
+    callback(new Error('密码需包含至少一个数字'))
+  } else {
+    callback()
+  }
+}
+
 /** 抓取状态映射 */
 export const statusMap: Record<string, { class: string; label: string }> = {
   idle: { class: 'badge-idle', label: '待抓取' },

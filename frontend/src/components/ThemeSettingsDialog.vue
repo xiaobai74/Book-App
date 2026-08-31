@@ -16,6 +16,7 @@
     width="640px"
     class="theme-dialog"
     :close-on-click-modal="false"
+    append-to-body
     aria-label="自定义背景设置"
     @update:model-value="onVisibleChange"
     @open="onOpen"
@@ -172,6 +173,25 @@
       </p>
     </section>
 
+    <!-- ④ 背景透明度（v2.5.1）：控制背景场景层不透明度，即时生效并持久化 -->
+    <section class="theme-section" aria-labelledby="opacity-heading">
+      <h3 id="opacity-heading" class="section-title">背景透明度</h3>
+      <div class="particle-row">
+        <el-slider
+          class="particle-slider"
+          :model-value="Math.round(themeStore.active.bgOpacity * 100)"
+          :min="BG_OPACITY_MIN_PCT"
+          :max="100"
+          :step="5"
+          :show-tooltip="false"
+          aria-label="背景透明度"
+          @update:model-value="onBgOpacityChange"
+        />
+        <span class="particle-count" aria-live="polite">{{ Math.round(themeStore.active.bgOpacity * 100) }}%</span>
+      </div>
+      <p class="section-help">调低后背景场景/图片逐渐隐去，画面更素雅，页面内容不受影响</p>
+    </section>
+
     <template #footer>
       <div class="dialog-footer">
         <el-button @click="handleReset">恢复默认</el-button>
@@ -186,10 +206,13 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { useThemeStore, THEME_PRESETS, PARTICLE_MIN, PARTICLE_MAX } from '@/stores/theme'
+import { useThemeStore, THEME_PRESETS, PARTICLE_MIN, PARTICLE_MAX, BG_OPACITY_MIN } from '@/stores/theme'
 import type { BackgroundScene, BackgroundPalette, ThemePreset } from '@/stores/theme'
 
 const themeStore = useThemeStore()
+
+/** 背景透明度滑杆下限（百分比，对应 BG_OPACITY_MIN，v2.5.1） */
+const BG_OPACITY_MIN_PCT = Math.round(BG_OPACITY_MIN * 100)
 
 /** 图片上传限制：类型白名单 + 10MB（IndexedDB 足够承载，Blob 不膨胀） */
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
@@ -251,11 +274,17 @@ const particleLabel = computed(() => {
   return `${themeStore.active.particleCount} 个`
 })
 
+/** 草稿同步为当前生效背景（色板 + 场景），并清除自定义编辑态；
+    scene 可显式指定（上传/切回图片后跟随 'image'） */
+function syncDraft(scene?: BackgroundScene) {
+  Object.assign(paletteDraft, themeStore.active.palette)
+  sceneDraft.value = scene ?? themeStore.active.scene
+  hasCustomEdit.value = false
+}
+
 /** 打开弹窗：草稿同步为当前背景（丢弃上次未保存改动） */
 function onOpen() {
-  Object.assign(paletteDraft, themeStore.active.palette)
-  sceneDraft.value = themeStore.active.scene
-  hasCustomEdit.value = false
+  syncDraft()
   isDragging.value = false
 }
 
@@ -267,9 +296,7 @@ function onVisibleChange(visible: boolean) {
 /** 选择预设：立即生效 + 持久化，草稿同步 */
 function applyPreset(preset: ThemePreset) {
   themeStore.applyPreset(preset)
-  Object.assign(paletteDraft, preset.palette)
-  sceneDraft.value = preset.scene
-  hasCustomEdit.value = false
+  syncDraft()
 }
 
 /** 色板任一项改动：进入自定义编辑态，实时预览。
@@ -318,9 +345,7 @@ async function uploadImage(file: File) {
   try {
     await themeStore.applyImageFile(file)
     // 上传后草稿跟随当前（图片）背景，避免遗留未保存的调色板预览
-    Object.assign(paletteDraft, themeStore.active.palette)
-    sceneDraft.value = 'image'
-    hasCustomEdit.value = false
+    syncDraft('image')
     ElMessage.success('图片背景已设置')
   } catch {
     ElMessage.error('图片保存失败，请重试')
@@ -335,18 +360,14 @@ async function handleUseImage() {
   if (!ok) {
     ElMessage.error('图片读取失败，请重新上传')
   } else {
-    Object.assign(paletteDraft, themeStore.active.palette)
-    sceneDraft.value = 'image'
-    hasCustomEdit.value = false
+    syncDraft('image')
   }
 }
 
 /** 「移除」：删库 + 回退默认预设 */
 async function handleRemoveImage() {
   await themeStore.removeImageBackground()
-  Object.assign(paletteDraft, themeStore.active.palette)
-  sceneDraft.value = themeStore.active.scene
-  hasCustomEdit.value = false
+  syncDraft()
   ElMessage.success('图片背景已移除')
 }
 
@@ -358,6 +379,11 @@ function onParticlesToggle(enabled: string | number | boolean) {
 /** 粒子数量：即时生效并持久化 */
 function onParticleCountChange(count: string | number | undefined) {
   themeStore.setParticleCount(Number(count) || 0)
+}
+
+/** 背景透明度（百分比）：即时生效并持久化（v2.5.1） */
+function onBgOpacityChange(value: string | number | undefined) {
+  themeStore.setBgOpacity((Number(value) || 100) / 100)
 }
 
 /** 保存：自定义草稿转正。
@@ -373,9 +399,7 @@ function handleSave() {
 /** 恢复默认预设 */
 function handleReset() {
   themeStore.resetToDefault()
-  Object.assign(paletteDraft, themeStore.active.palette)
-  sceneDraft.value = themeStore.active.scene
-  hasCustomEdit.value = false
+  syncDraft()
 }
 </script>
 

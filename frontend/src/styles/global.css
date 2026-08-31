@@ -3,31 +3,55 @@
    v1.4 — 冷暖双基调设计系统（冷色为骨架 · 暖色为点缀）
    v1.5 — 移动端适配（断点 / 安全区 / 触控目标 / 对话框）
    v1.7 — 全局水墨雪景背景（App.vue 挂载 InkSnowBackground，雪花动效豁免）
-   对比度全部满足 WCAG 2.2 AA · 极简卡片式布局
+   v2.0 — 水墨玻璃拟态（ink glass）设计系统：
+     · 墨色令牌（--ink / --seal）+ 宋体系标题字，水墨气质
+     · --surface 升级为半透明玻璃底 + 全局统一 backdrop-filter，
+       毛玻璃质感为固定常量，不随自定义背景变化而改变（需求 2）
+     · 层次令牌（--shadow-glass / 悬浮加深），卡片浮于背景之上（需求 1）
+     · 正文/弱化文字对比度上调，功能色加深，突出主操作（需求 4）
+   对比度满足 WCAG 2.2 AA · 水墨风卡片式布局（需求 3）
    ═══════════════════════════════════════════════════════ */
 
 :root {
   --mobile: 640px;   /* 手机断点：导航折叠、卡片重排、输入字号放大 */
   --tablet: 900px;   /* 平板断点：网格列数、容器内边距 */
 
+  /* ── 水墨骨架：墨色令牌（文字/强调/印章） ── */
+  --ink:        #262b33;        /* 浓墨：最深的正文/图标色 */
+  --ink-soft:   #454d59;        /* 淡墨：次级文字 */
+  --seal:       #b03a2e;        /* 朱砂印章红：头像/榜首等重要点缀 */
+  --seal-deep:  #8f2d24;        /* 朱砂加深（hover） */
+  --seal-soft:  color-mix(in oklch, #b03a2e 12%, transparent);
+
   /* ── 冷色系：骨架（背景/表面/文字/主色） ── */
   --bg:       #f4f6f8;
-  --surface:  #ffffff;
-  --fg:       #1e293b;
-  --fg-soft:  #334155;
-  --muted:    #64748b;
-  --border:   #e2e8f0;
-  --accent:   #3d7ea8;        /* 冰蓝主色（对白 4.5:1） */
-  --accent-hover: #35688c;    /* 冰蓝加深（5.7:1） */
-  --accent-ice:  #2f6f96;     /* 深一档冰蓝（5.5:1，小字强调） */
-  --accent-soft: color-mix(in oklch, #3d7ea8 14%, transparent);
-  --accent-ice-soft: color-mix(in oklch, #2f6f96 16%, transparent);
-  --success:  #2e7d5b;        /* 苔绿（5.1:1） */
-  --danger:   #b4523f;        /* 陶土红（4.6:1，暖色功能色） */
-  --danger-soft: color-mix(in oklch, #b4523f 12%, transparent);
-  --hover: color-mix(in oklch, #3d7ea8 6%, transparent);   /* 行/条目悬停底色 */
-  --focus-ring: #3d7ea8;      /* 键盘焦点描边 */
-  --input-border: #94a3b8;    /* 表单输入框边框（≥3:1，非装饰性） */
+  /* v2.0 毛玻璃表面：固定白色半透明底。所有卡片/栏位引用此变量，
+     背景无论怎样切换，玻璃质感保持恒定（配合下方 .glass-surface 的模糊层） */
+  --surface:  rgba(255, 255, 255, 0.66);
+  --surface-solid: #ffffff;     /* 需要完全不透明处使用（输入框内部等） */
+  --fg:       var(--ink);       /* 正文：浓墨，对比度提升（需求 4） */
+  --fg-soft:  var(--ink-soft);
+  --muted:    #525e6c;          /* 次级文字加深（玻璃底上 ≥4.5:1） */
+  --border:   rgba(38, 43, 51, 0.12);   /* 墨线描边（替代浅灰实线，玻璃上更协调） */
+  --accent:   #2e688a;        /* 黛蓝主色（对白 5.6:1，v2.0 加深） */
+  --accent-hover: #234f69;    /* 黛蓝加深（7.2:1） */
+  --accent-ice:  #27566f;     /* 深黛蓝（6.6:1，小字强调） */
+  --accent-soft: color-mix(in oklch, #2e688a 14%, transparent);
+  --accent-ice-soft: color-mix(in oklch, #27566f 16%, transparent);
+  --success:  #276b4e;        /* 苔绿加深（5.5:1） */
+  --danger:   #a64233;        /* 陶土红加深（5.1:1，暖色功能色） */
+  --danger-soft: color-mix(in oklch, #a64233 12%, transparent);
+  --hover: color-mix(in oklch, #262b33 7%, transparent);   /* 行/条目悬停底色（墨色晕染） */
+  --focus-ring: #2e688a;      /* 键盘焦点描边 */
+  --input-border: #7e8d9c;    /* 表单输入框边框（≥3:1，非装饰性） */
+
+  /* ── v2.0 毛玻璃 & 层次令牌 ── */
+  --glass-blur: blur(18px) saturate(1.5);          /* 统一毛玻璃滤镜（恒定） */
+  --glass-border: rgba(255, 255, 255, 0.7);        /* 玻璃内侧高光描边 */
+  --shadow-glass: 0 6px 24px rgba(23, 32, 45, 0.10),
+                  0 1px 3px rgba(23, 32, 45, 0.06); /* 玻璃卡片的墨影层次 */
+  --shadow-glass-hover: 0 12px 32px rgba(23, 32, 45, 0.16),
+                  0 2px 6px rgba(23, 32, 45, 0.08); /* 悬浮加深层级 */
 
   /* ── 暖色系：点缀（星标/重点标记/阅读器纸感） ── */
   --accent-warm: #b08d4f;     /* 暖金：星标/重点标记（3.1:1） */
@@ -57,6 +81,8 @@
 
   --font-body: system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  /* v2.0 水墨标题字：宋体系衬线，系统字体降级兜底（需求 3） */
+  --font-heading: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'SimSun', Georgia, serif;
 
   --radius: 8px;
   --radius-md: 12px;
@@ -89,7 +115,89 @@ body {
 }
 
 a { color: var(--accent); text-decoration: none; }
-h1, h2, h3, h4 { margin: 0; }
+h1, h2, h3, h4 { margin: 0; font-family: var(--font-heading); letter-spacing: 0.02em; }
+
+/* ─── v2.0 统一毛玻璃层：凡引用 --surface 的表面类容器，
+       在此集中叠加恒定模糊滤镜 + 玻璃高光描边 + 墨影层次。
+       滤镜参数为固定常量，不随主题背景变化（需求 1/2） ─── */
+.topnav,
+.tabbar,
+.book-card,
+.search-card,
+.auth-card,
+.source-card,
+.rank-item,
+.sheet-panel,
+.profile-user,
+.profile-settings,
+.detail-card,
+.card,
+.external-result-card,
+.ai-summary-card,
+.command-palette,
+.mobile-search-row {
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-glass);
+}
+
+/* 水墨标题：页面主标题下的笔锋短线（层次感，需求 1）；
+   颜色走 --onbg-title，深色背景下自动切换暖白淡墨 */
+.ink-title {
+  color: var(--onbg-title);
+}
+.ink-title::after {
+  content: '';
+  display: block;
+  width: 52px;
+  height: 4px;
+  margin-top: 8px;
+  border-radius: 2px 5px 3px 6px;   /* 不对称圆角模拟笔锋 */
+  background: linear-gradient(90deg, var(--onbg-title) 0%, var(--onbg-text) 60%, transparent 100%);
+  opacity: 0.8;
+}
+
+/* ─── v2.5.1 水墨玻璃返回按钮：胶囊形玻璃药丸，任意背景上均可辨识。
+       适用于 router-link / button / el-button（text 型） ─── */
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 18px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--glass-border);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-decoration: none;
+  cursor: pointer;
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-glass);
+}
+.back-btn:hover,
+.back-btn:focus-visible {
+  color: var(--accent-hover);
+  border-color: var(--accent);
+  box-shadow: var(--shadow-glass-hover);
+}
+
+/* ─── v2.5.2 背景自适应墨色：直置在背景上的文字（页头标题/九宫格书名/
+       空状态/页脚）使用这组变量。浅色背景=浓墨（默认）；
+       html[data-bg-tone='dark']（深色图片/星夜背景，theme store 检测）
+       时切换为暖白淡墨，保证任意自定义背景下均可读 ─── */
+:root {
+  --onbg-title: var(--ink);
+  --onbg-text: var(--ink-soft);
+  --onbg-muted: var(--muted);
+}
+html[data-bg-tone='dark'] {
+  --onbg-title: #f5f2e9;
+  --onbg-text: #e9e5d9;
+  --onbg-muted: #c9c4b4;
+}
 
 /* ─── 键盘焦点可见性（WCAG 2.4.7 / 2.4.11） ────────────
    统一冰蓝 2px 描边 + 4px 偏移，对比度 ≥ 3:1，覆盖所有键盘导航元素 */
@@ -129,13 +237,13 @@ h1, h2, h3, h4 { margin: 0; }
   animation: none !important;
 }
 
-*:not(.star):not(.mark-btn):not(.skip-link) {
+*:not(.star):not(.mark-btn):not(.skip-link):not(.back-btn) {
   transition: none !important;
 }
 
-/* 可点击控件统一 150ms 微交互（星标/条目 hover 即时反馈） */
-.star, .mark-btn {
-  transition: color 0.15s ease, transform 0.15s ease !important;
+/* 可点击控件统一 150ms 微交互（星标/条目/返回按钮 hover 即时反馈） */
+.star, .mark-btn, .back-btn {
+  transition: color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease !important;
 }
 
 /* ─── 动效偏好（WCAG 2.3.3）：用户要求减少动效时停用一切非必要动效 ─── */
@@ -264,6 +372,13 @@ h1, h2, h3, h4 { margin: 0; }
   padding-inline: max(24px, env(safe-area-inset-left)) max(24px, env(safe-area-inset-right));
 }
 
+/* 移动端顶栏下移：避开状态栏并留出指尖余量，方便点击顶部功能 */
+@media (max-width: 760px) {
+  .topnav {
+    padding-top: calc(env(safe-area-inset-top) + 4px);
+  }
+}
+
 @media (max-width: 640px) {
   .topnav-inner {
     padding-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right));
@@ -307,7 +422,7 @@ h1, h2, h3, h4 { margin: 0; }
   position: sticky;
   top: 0;
   z-index: 10;
-  background: var(--surface);
+  background: rgba(255, 255, 255, 0.6);   /* v2.0 毛玻璃：模糊由全局 .topnav 规则提供 */
   border-bottom: 1px solid var(--border);
 }
 
@@ -328,7 +443,9 @@ h1, h2, h3, h4 { margin: 0; }
   gap: 8px;
   font-size: 18px;
   font-weight: 700;
-  color: var(--fg);
+  color: var(--ink);            /* v2.0：浓墨标题，宋体系由 h 规则外单独强化 */
+  font-family: var(--font-heading);
+  letter-spacing: 0.04em;
 }
 
 .topnav .logo-area svg {
@@ -342,12 +459,12 @@ h1, h2, h3, h4 { margin: 0; }
   gap: 12px;
 }
 
-/* 导航当前页面提示（顶部细条）：冰蓝 → 暖金的冷-暖呼应，暖色仅此一细条 */
+/* 导航当前页面提示（顶部细条）：黛蓝 → 朱砂的墨色-印章呼应（v2.0） */
 .topnav::after {
   content: '';
   display: block;
   height: 2px;
-  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-ice) 55%, var(--accent-warm) 100%);
+  background: linear-gradient(90deg, var(--ink) 0%, var(--accent) 55%, var(--seal) 100%);
 }
 
 /* ─── Auth Pages（v1.7：页面背景由 App.vue 全局水墨雪景层提供） ── */
@@ -360,13 +477,12 @@ h1, h2, h3, h4 { margin: 0; }
 }
 
 .auth-card {
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid var(--border);
+  background: var(--surface);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
   padding: 40px 36px;
   width: 100%;
   max-width: 400px;
-  box-shadow: 0 8px 32px rgba(30, 41, 59, 0.08);   /* 卡片自背景层浮起 */
 }
 
 .auth-card h1 {
@@ -400,6 +516,11 @@ h1, h2, h3, h4 { margin: 0; }
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* v2.0：悬浮加深墨影，体现卡片层次（需求 1） */
+.book-card:hover {
+  box-shadow: var(--shadow-glass-hover);
 }
 
 .book-card .book-title {
@@ -665,8 +786,8 @@ h1, h2, h3, h4 { margin: 0; }
 /* ─── Empty State ──────────────────────────────────── */
 .empty-state {
   text-align: center;
-  padding: 80px 32px;
-  color: var(--muted);
+  padding: 64px 32px;   /* v2.5.2：直置背景上，颜色走自适应墨色变量 */
+  color: var(--onbg-text);
 }
 
 .empty-state .empty-icon {
@@ -710,7 +831,7 @@ h1, h2, h3, h4 { margin: 0; }
 /* ─── Footer ───────────────────────────────────────── */
 .pagefoot {
   padding-block: 32px;
-  color: var(--muted);
+  color: var(--onbg-muted);
   font-size: 12px;
   border-top: 1px solid var(--border);
   text-align: center;
@@ -724,7 +845,7 @@ h1, h2, h3, h4 { margin: 0; }
 }
 
 /* ─── Element Plus 覆盖 ────────────────────────────── */
-/* 让 Element Plus 融入 v1.4 冷暖双基调设计系统 */
+/* 让 Element Plus 融入 v2.0 水墨玻璃设计系统 */
 :root {
   --el-color-primary: var(--accent);
   --el-color-primary-light-3: var(--accent-ice);
@@ -732,12 +853,36 @@ h1, h2, h3, h4 { margin: 0; }
   --el-color-success: var(--success);
   --el-color-danger: var(--danger);
   --el-border-radius-base: var(--radius);
+  /* v2.0：控件边框加深（非文字对比 ≥3:1）+ 墨色文字 */
+  --el-border-color: #9aa8b5;
+  --el-border-color-light: #b0bcc7;
+  --el-border-color-lighter: #c2ccd5;
+  --el-text-color-primary: var(--ink);
+  --el-text-color-regular: var(--ink-soft);
+  --el-text-color-secondary: var(--muted);
+}
+
+/* Element Plus 对话框：毛玻璃面板（append-to-body 后仍全局命中） */
+.el-dialog {
+  --el-dialog-bg-color: rgba(255, 255, 255, 0.88);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-glass-hover);
 }
 
 /* Element Plus 对话框间距覆盖 */
 .el-dialog__header { font-weight: 600; }
 
-/* 主按钮：冰蓝底，白字（4.5:1 达标）；hover 使用加深色 */
+/* 输入类控件保持实心白底：玻璃卡片上确保文字可读性与对比度 */
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  background: var(--surface-solid) !important;
+}
+
+/* 主按钮：黛蓝底白字，加粗 + 墨影，功能按钮突出（需求 1/4） */
 .el-button--primary {
   --el-button-bg-color: var(--accent);
   --el-button-border-color: var(--accent);
@@ -745,7 +890,76 @@ h1, h2, h3, h4 { margin: 0; }
   --el-button-hover-border-color: var(--accent-hover);
   --el-button-active-bg-color: var(--accent-hover);
   --el-button-active-border-color: var(--accent-hover);
+  font-weight: 600;
+  /* v2.5.2：黛蓝玻璃光泽——顶部高光 + 底部加深 + 墨影 */
+  background: linear-gradient(180deg, color-mix(in oklch, var(--accent) 82%, white) 0%, var(--accent) 55%, var(--accent-hover) 100%);
+  border-color: transparent;
+  box-shadow: 0 3px 12px color-mix(in oklch, var(--accent) 35%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+/* v2.5.2 水墨玻璃按钮：默认按钮半透明玻璃底 + 白描边 + 墨色文字，
+   任意背景上均有质感且可辨识；text/link 型保持透明 */
+.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.is-text):not(.is-link) {
+  background: var(--surface);
+  border-color: var(--glass-border);
+  color: var(--ink);
+  font-weight: 500;
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--shadow-glass);
+}
+.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.is-text):not(.is-link):hover,
+.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.is-text):not(.is-link):focus-visible {
+  background: rgba(255, 255, 255, 0.88);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+  box-shadow: var(--shadow-glass-hover);
+}
+.el-button.is-text,
+.el-button.is-link {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* v2.5.2 筛选标签（radio-button 组）玻璃分段：容器玻璃底，选中项黛蓝填充 */
+.el-radio-button__inner {
+  background: var(--surface);
+  border-color: var(--glass-border);
+  color: var(--ink-soft);
+  font-weight: 500;
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+.el-radio-button__inner:hover {
+  color: var(--accent-hover);
+}
+.el-radio-button__original-radio:checked + .el-radio-button__inner {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: -1px 0 0 0 var(--accent), 0 2px 8px color-mix(in oklch, var(--accent) 35%, transparent);
+}
+
+/* v2.5.2 分页器玻璃化 */
+.el-pagination {
+  --el-pagination-bg-color: var(--surface);
+  --el-pagination-button-bg-color: var(--surface);
+  --el-pagination-hover-color: var(--accent-hover);
+}
+.el-pager li,
+.el-pagination button {
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
 }
 
 /* 表格 action column 间距 */
 .action-column { display: flex; gap: 8px; }
+
+/* 移动端 TabBar 页底部预留（与 TabBar 高度 56px + 安全区一致） */
+@media (max-width: 760px) {
+  #app-main.has-tabbar {
+    padding-bottom: calc(56px + env(safe-area-inset-bottom));
+  }
+}

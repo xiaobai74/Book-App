@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: '小说管理App',
   webDir: 'dist',
   server: {
-    // Android WebView 使用 https://localhost 作为源
+    // Android WebView 源固定为 http://localhost，后端 CORS 白名单需包含该源
     androidScheme: 'http',
   },
 }

@@ -7,15 +7,16 @@
 
     <section class="section">
       <div class="container">
+        <!-- v2.5.2：页头直置背景，标题走自适应墨色变量 -->
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px">
-          <h2 style="font-size:clamp(22px,3vw,28px);font-weight:600">自定义抓取源站</h2>
+          <h2 class="ink-title" style="font-size:clamp(22px,3vw,28px);font-weight:600">自定义抓取源站</h2>
           <el-button type="primary" @click="openAdd()">
             <el-icon style="margin-right:6px"><Plus /></el-icon>
             添加源站
           </el-button>
         </div>
 
-        <p class="lead" style="margin-bottom:16px; color:var(--muted); font-size:13px;">
+        <p class="lead" style="margin-bottom:16px; color:var(--onbg-muted); font-size:13px;">
           在这里配置额外的源站抓取规则。未配置的网站将自动使用通用解析策略。
         </p>
 
@@ -53,7 +54,7 @@
         </div>
 
         <div style="text-align:center;margin-top:40px">
-          <el-button @click="$router.push('/shelf')">← 返回书架</el-button>
+          <button type="button" class="back-btn" @click="$router.push('/shelf')">← 返回书架</button>
         </div>
       </div>
     </section>
@@ -225,7 +226,7 @@ async function loadSources() {
     if (data.success && data.data) {
       sources.value = data.data
     }
-  } catch (err: any) {
+  } catch {
     ElMessage.error('加载自定义源站失败')
   } finally {
     loading.value = false
@@ -339,7 +340,7 @@ function confirmDelete(source: CrawlSource) {
 
 <style scoped>
 .stack { display: flex; flex-direction: column; }
-.lead { font-size: 14px; color: var(--muted); }
+.lead { font-size: 14px; color: var(--onbg-muted); }
 
 .source-card {
   background: var(--surface);

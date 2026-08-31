@@ -187,3 +187,31 @@ export interface AiSearchResult {
   match_reason: string
   score: number
 }
+
+/** 排行榜源站信息 */
+export interface RankingSource {
+  id: number
+  name: string
+  url: string
+  board_names: string[]
+  is_custom: boolean
+}
+
+/** 排行榜条目 */
+export interface RankingBook {
+  rank: number
+  title: string
+  author: string
+  book_url: string
+  category: string
+  latest_chapter: string
+  last_update: string
+}
+
+/** 榜单抓取结果 */
+export interface RankingBoardData {
+  source_name: string
+  board_name: string
+  from_cache: boolean
+  items: RankingBook[]
+}

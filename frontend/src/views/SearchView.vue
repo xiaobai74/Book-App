@@ -11,6 +11,10 @@
             移除手动模式切换；结果区显示「自动使用 xx 搜索」标识，
             并提供一次性改用另一种方式重新搜索；全网搜索 tab 左上角
             原「搜索：」标题位置改为「← 返回书架」按钮
+     v2.2 — 搜索状态缓存（searchPage store）：切页再回来恢复
+            上次查询与结果，不重新发起搜索；书架内/全网 tab
+            互切时已有同关键词结果则直接复用，仅用户主动
+            提交搜索 / 点击重新搜索才发新请求
      ═══════════════════════════════════════════════════════════════ -->
 <template>
   <div>
@@ -18,19 +22,19 @@
 
     <section class="section">
       <div class="container">
-        <!-- 搜索栏：全网搜索 tab 显示返回书架按钮，书架内 tab 显示搜索标题 -->
+        <!-- 搜索栏：全网搜索 tab 显示返回书架按钮，书架内 tab 显示搜索标题；
+             v2.5.2：页头直置背景，文字走自适应墨色变量 -->
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px">
-          <el-button
+          <button
             v-if="searchMode === 'web'"
-            text
-            size="small"
-            class="back-to-shelf-btn"
+            type="button"
+            class="back-btn back-to-shelf-btn"
             aria-label="返回书架"
             @click="$router.push('/shelf')"
           >
             ← 返回书架
-          </el-button>
-          <h2 v-else style="font-size:clamp(22px,3vw,28px);font-weight:600">
+          </button>
+          <h2 v-else class="ink-title" style="font-size:clamp(22px,3vw,28px);font-weight:600">
             {{ hasSearched ? `搜索："${currentQ}"` : '搜索小说' }}
           </h2>
           <div class="search-controls" style="display:flex;align-items:center;gap:8px;flex:0 1 480px">
@@ -64,7 +68,7 @@
           <!-- 初始状态 -->
           <div v-if="!hasSearched" class="empty-state">
             <div class="empty-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" style="width:48px;height:48px;stroke:var(--muted)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" style="width:48px;height:48px;stroke:var(--onbg-muted)">
                 <circle cx="11" cy="11" r="7"/>
                 <path d="m21 21-4.35-4.35"/>
               </svg>
@@ -188,7 +192,7 @@
           <!-- 初始状态 -->
           <div v-if="!hasSearched" class="empty-state">
             <div class="empty-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" style="width:48px;height:48px;stroke:var(--muted)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" style="width:48px;height:48px;stroke:var(--onbg-muted)">
                 <circle cx="11" cy="11" r="7"/>
                 <path d="m21 21-4.35-4.35"/>
                 <line x1="15" y1="3" x2="19" y2="7"/>
@@ -199,7 +203,7 @@
               <template v-if="!booksStore.sourcesLoaded">正在加载源站列表…</template>
               <template v-else>输入书名或作者，在 {{ booksStore.sources.length || '多' }} 个源站中搜索</template>
             </p>
-            <p style="font-size:12px;margin-top:6px;color:var(--muted)">搜索结果可一键添加到书架，然后抓取生成电子书</p>
+            <p style="font-size:12px;margin-top:6px;color:var(--onbg-muted)">搜索结果可一键添加到书架，然后抓取生成电子书</p>
           </div>
 
           <!-- 加载中 -->
@@ -228,7 +232,7 @@
 
           <!-- 搜索结果列表 -->
           <div v-else>
-            <div style="margin-bottom:12px;font-size:13px;color:var(--muted)">
+            <div style="margin-bottom:12px;font-size:13px;color:var(--onbg-muted)">
               找到 <span class="num" style="font-family:var(--font-mono)">{{ booksStore.externalResults.length }}</span> 条结果
             </div>
             <div class="stack" style="gap:12px">
@@ -279,7 +283,7 @@
         </template>
 
         <div style="text-align:center;margin-top:40px">
-          <el-button @click="$router.push('/shelf')">← 返回书架</el-button>
+          <button type="button" class="back-btn" @click="$router.push('/shelf')">← 返回书架</button>
         </div>
       </div>
     </section>
@@ -287,12 +291,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { useBooksStore, useShelfSearchStore } from '@/stores'
-import { getDownloadUrl, addBook, getBooks } from '@/api/books'
+import { useBooksStore, useShelfSearchStore, useSearchPageStore } from '@/stores'
+import { getBooks } from '@/api/books'
+import { downloadEbook } from '@/utils/download'
 import type { SearchResultItem } from '@/types'
 import { detectQueryIntent } from '@/lib/queryIntent'
 import TopNav from '@/components/TopNav.vue'
@@ -304,19 +309,32 @@ const router = useRouter()
 const booksStore = useBooksStore()
 /** v1.9：书架内 AI 语义搜索状态与 TopNav 主搜索框共享 */
 const shelfSearch = useShelfSearchStore()
+/**
+ * v2.2：搜索页状态存于 store——切页再回来恢复上次查询与结果，
+ * 不重新发起搜索；仅用户主动提交搜索 / 点击重新搜索才发新请求。
+ */
+const sp = useSearchPageStore()
 
-const searchMode = ref<'shelf' | 'web'>('web')
-const searchQuery = ref('')
-const hasSearched = ref(false)
-const currentQ = ref('')
-const searchPage = ref(1)
+const searchMode = computed({
+  get: () => sp.mode,
+  set: (v: 'shelf' | 'web') => { sp.mode = v }
+})
+const searchQuery = computed({
+  get: () => sp.query,
+  set: (v: string) => { sp.query = v }
+})
+const hasSearched = computed(() => sp.hasSearched)
+const currentQ = computed(() => sp.currentQ)
+const searchPage = computed({
+  get: () => sp.searchPage,
+  set: (v: number) => { sp.searchPage = v }
+})
+const addedBookIds = computed(() => sp.addedBookIds)
 const addingIdx = ref<number | null>(null)
-const addedBookIds = reactive<Record<number, string>>({})
-
-// 已有书架书籍的 source_url 集合，用于判断搜索结果是否已在书架
-const shelfUrls = ref<Set<string>>(new Set())
 
 const isSearching = ref(false)
+/** 挂载初始化完成标记：初始化期间的 mode 变化不触发旧查询的重新搜索 */
+let initialized = false
 
 /** v2.0：AI 开关（头像菜单）开启 + 书架内选择 AI 模式时，AI 语义搜索才生效 */
 const aiActive = computed(() => shelfSearch.aiEnabled && shelfSearch.aiMode)
@@ -339,12 +357,10 @@ const shelfResultList = computed(() =>
 )
 
 onMounted(async () => {
-  // 读取 URL 参数中的搜索模式
+  // v2.2：携带参数进入 = 新的搜索意图；无参数则恢复上次页面状态（不重新搜索）
   const modeParam = (route.query.mode as string) || ''
-  if (modeParam === 'shelf') {
-    searchMode.value = 'shelf'
-  } else {
-    searchMode.value = 'web'
+  if (modeParam) {
+    searchMode.value = modeParam === 'shelf' ? 'shelf' : 'web'
   }
   // v2.1：书架内搜索方式由顶栏按查询意图识别后携带 ai 参数进入本页
   //（仅 AI 开关开启时读取 ai 参数；缺省沿用上次选择）
@@ -355,7 +371,7 @@ onMounted(async () => {
     shelfSearch.aiModeSource = 'auto'
   }
 
-  // 初始化：获取源站列表 + 当前书架快照
+  // 初始化：获取源站列表 + 当前书架快照（均已加载过则跳过）
   await Promise.all([
     booksStore.fetchSources(),
     loadShelfSnapshot()
@@ -366,10 +382,12 @@ onMounted(async () => {
     searchQuery.value = initQ
     doSearch()
   }
+  initialized = true
 })
 
-/** 获取当前用户书架中所有书籍的 source_url，用于去重判断 */
+/** 获取当前用户书架中所有书籍的 source_url，用于去重判断（已加载过则跳过） */
 async function loadShelfSnapshot() {
+  if (sp.shelfUrlsLoaded) return
   try {
     // 分页加载全部书架数据，构建 source_url 集合
     let page = 1
@@ -380,7 +398,7 @@ async function loadShelfSnapshot() {
       if (data.success && data.data) {
         for (const b of data.data) {
           if (b.source_url) {
-            shelfUrls.value.add(b.source_url.trim())
+            sp.shelfUrls.push(b.source_url.trim())
           }
         }
         // 用 total_pages 判断是否还有下一页，避免整百总数时多发一次空页请求
@@ -392,18 +410,34 @@ async function loadShelfSnapshot() {
       }
     }
   } catch { /* 静默失败 */ }
+  finally {
+    sp.shelfUrlsLoaded = true
+  }
 }
 
 function isAddedToShelf(sourceUrl: string): boolean {
-  return shelfUrls.value.has(sourceUrl.trim())
+  return sp.shelfUrls.includes(sourceUrl.trim())
+}
+
+/** 目标 tab 是否已有当前关键词的缓存结果（有则切 tab 不重新搜索） */
+function hasCachedResults(mode: 'shelf' | 'web'): boolean {
+  const q = sp.currentQ
+  if (!q) return false
+  if (mode === 'web') {
+    return sp.lastWebQuery === q && !booksStore.externalError
+  }
+  if (aiActive.value) {
+    return shelfSearch.appliedAiQuery === q
+  }
+  return sp.lastShelfQuery === q
 }
 
 async function doSearch() {
   const q = searchQuery.value.trim()
   if (!q) return
 
-  hasSearched.value = true
-  currentQ.value = q
+  sp.hasSearched = true
+  sp.currentQ = q
   isSearching.value = true
 
   try {
@@ -416,12 +450,16 @@ async function doSearch() {
         // AI 语义搜索：状态与结果在共享 store，加载态由 aiSearching 驱动
         await shelfSearch.performAiSearch(q)
       } else {
-        searchPage.value = 1
-        await booksStore.search(q, searchPage.value)
+        sp.searchPage = 1
+        await booksStore.search(q, 1)
+        sp.lastShelfQuery = q
       }
     } else {
       // v2.0：全网搜索不再按源站筛选，始终搜索全部源站
       await booksStore.searchExternal(q)
+      if (!booksStore.externalError) {
+        sp.lastWebQuery = q
+      }
     }
   } finally {
     isSearching.value = false
@@ -435,8 +473,8 @@ function switchSearchMethod() {
 }
 
 async function handleShelfSearchPageChange(page: number) {
-  searchPage.value = page
-  await booksStore.search(currentQ.value, page)
+  sp.searchPage = page
+  await booksStore.search(sp.currentQ, page)
   window.scrollTo({ top: 0, behavior: 'auto' })
 }
 
@@ -450,23 +488,18 @@ async function addToShelf(item: SearchResultItem, idx: number) {
 
   addingIdx.value = idx
   try {
-    const { data } = await addBook({
+    // v2.2：走 store 添加——本地同步全量/分页列表，不再触发书架整页刷新
+    const added = await booksStore.addBook({
       title: item.title,
       author: item.author || '未知',
       source_url: item.source_url || null
     })
-    if (data.success && data.data) {
-      addedBookIds[idx] = data.data.id
-      // 更新本地去重集合
-      if (item.source_url) {
-        shelfUrls.value.add(item.source_url.trim())
-      }
-      // 刷新书架数据
-      booksStore.fetchBooks()
-      ElMessage.success(`《${item.title}》已添加到书架，可前往详情页抓取生成电子书`)
-    } else {
-      throw new Error(data.error || '添加失败')
+    sp.addedBookIds[idx] = added.id
+    // 更新本地去重集合
+    if (item.source_url) {
+      sp.shelfUrls.push(item.source_url.trim())
     }
+    ElMessage.success(`《${item.title}》已添加到书架，可前往详情页抓取生成电子书`)
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.error || err.message || '添加失败')
   } finally {
@@ -475,37 +508,15 @@ async function addToShelf(item: SearchResultItem, idx: number) {
 }
 
 /** 下载电子书（书架内搜索结果直接下载） */
-async function downloadBook(bookId: string, format: 'epub' | 'txt', filename: string) {
-  try {
-    const token = localStorage.getItem('access_token')
-    if (!token) return
-    const url = getDownloadUrl(bookId, format)
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` }
-    })
-    if (!response.ok) {
-      const err = await response.json()
-      throw new Error(err.error || '下载失败')
-    }
-    const blob = await response.blob()
-    const downloadUrl = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = downloadUrl
-    a.download = filename + '.' + format
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(downloadUrl)
-    ElMessage.success(`已开始下载`)
-  } catch (err: any) {
-    ElMessage.error(err.message || '下载失败')
-  }
+function downloadBook(bookId: string, format: 'epub' | 'txt', filename: string) {
+  downloadEbook(bookId, format, filename)
 }
 
-// 切换搜索模式时，若已有关键词则自动重新搜索
+// 切换搜索模式时：已有当前关键词的缓存结果则直接展示，否则重新搜索（v2.2）
 watch(searchMode, () => {
   booksStore.externalError = null
-  if (hasSearched.value && currentQ.value) {
+  if (!initialized) return
+  if (sp.hasSearched && sp.currentQ && !hasCachedResults(searchMode.value)) {
     doSearch()
   }
 })

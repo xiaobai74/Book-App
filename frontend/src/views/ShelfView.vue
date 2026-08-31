@@ -4,6 +4,12 @@
      v1.3.2 — 搜索改为点击「搜索」按钮 / 按 Enter 触发
      v1.9 — 书架搜索栏合并到顶部主搜索框（TopNav，普通 / AI 双模式），
            本页保留筛选标签与书籍列表展示
+     v2.2 — 书架缓存优化（books store.ensureShelf）：切页返回瞬间恢复
+           缓存数据，仅首次进入展示加载骨架；超过 60s 后返回自动
+           后台静默刷新（不阻断展示）；客户端模式筛选标签零请求
+     v2.3 — 移动端：九宫格视图模式（持久化）；长按书籍唤起详情
+           底部弹层（BookActionSheet），标记 / 删除移入弹层，
+           弹层底部预留后续功能扩展空间
      ═══════════════════════════════════════════════════════════════ -->
 <template>
   <div>
@@ -11,21 +17,32 @@
 
     <section class="section">
       <div class="container">
+        <!-- v2.5.2：页头直置背景上，文字颜色走自适应墨色变量（深色背景自动换暖白） -->
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px">
           <div>
-            <h2 style="font-size:clamp(22px,3vw,28px);font-weight:600">我的书架</h2>
+            <h2 class="ink-title" style="font-size:clamp(22px,3vw,28px);font-weight:600">我的书架</h2>
             <p class="lead" style="margin-top:4px">共 <span class="num" style="font-family:var(--font-mono)">{{ booksStore.bookCount }}</span> 本小说</p>
           </div>
-          <el-button type="primary" class="shelf-add-btn" @click="showAddDialog = true">
-            <el-icon style="margin-right:6px"><Plus /></el-icon>
-            添加小说
-          </el-button>
+          <div style="display:flex;align-items:center;gap:10px">
+            <!-- v2.3：视图模式切换（列表 / 九宫格，持久化） -->
+            <el-button
+              circle
+              :icon="viewMode === 'list' ? Grid : List"
+              :title="viewMode === 'list' ? '切换九宫格视图' : '切换列表视图'"
+              :aria-label="viewMode === 'list' ? '切换九宫格视图' : '切换列表视图'"
+              @click="toggleViewMode"
+            />
+            <el-button type="primary" class="shelf-add-btn" @click="showAddDialog = true">
+              <el-icon style="margin-right:6px"><Plus /></el-icon>
+              添加小说
+            </el-button>
+          </div>
         </div>
 
         <!-- ── v1.9：书架搜索栏已合并到顶部主搜索框（TopNav） ── -->
 
-        <!-- 加载中 -->
-        <div v-if="booksStore.loading" class="empty-state">
+        <!-- 加载中（仅首次加载无缓存时展示；切页返回直接恢复缓存，v2.2） -->
+        <div v-if="booksStore.loading && !booksStore.shelfLoaded" class="empty-state">
           <div class="loading-bar"></div>
           <p style="margin-top:12px">加载中…</p>
         </div>
@@ -47,7 +64,7 @@
           <!-- 空状态 -->
           <div v-if="displayBooks.length === 0 && !booksStore.loading" class="empty-state">
             <div class="empty-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" style="width:48px;height:48px;stroke:var(--muted)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" style="width:48px;height:48px;stroke:var(--onbg-muted)">
                 <path d="M4 19.5A2.5 2.5 0 016.5 17H20"/>
                 <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/>
               </svg>
@@ -58,62 +75,83 @@
             </el-button>
           </div>
 
-          <!-- 书籍列表 -->
-          <div v-else class="stack" style="gap:12px">
-          <div v-for="book in displayBooks" :key="book.id" class="book-card">
-            <div class="book-card-main" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
-              <div class="book-card-left" style="display:flex;align-items:flex-start;gap:16px;min-width:0">
-                <!-- 星标标记按钮 v1.2（v1.4：aria-pressed 状态 + ≥32px 目标尺寸） -->
-                <button
-                  class="mark-btn"
-                  type="button"
-                  :aria-pressed="book.is_marked"
-                  :aria-label="book.is_marked ? '取消标记' : '标记此书'"
-                  :title="book.is_marked ? '取消标记' : '标记此书'"
-                  @click.stop="toggleMark(book)"
-                >
-                  <span v-if="book.is_marked" class="star star-filled">★</span>
-                  <span v-else class="star star-empty">☆</span>
-                </button>
-                <router-link :to="`/detail/${book.id}`" class="shelf-cover">
-                  <BookCover :title="book.title" :author="book.author" />
-                </router-link>
-                <div class="book-card-info" style="min-width:0">
-                  <router-link :to="`/detail/${book.id}`" class="book-title">
-                    {{ book.title }}
-                  </router-link>
-                  <div class="book-author">
-                    {{ book.author }}
+          <!-- 书籍列表（v2.3：列表 / 九宫格双模式；长按唤起详情弹层） -->
+          <div v-else>
+            <!-- 列表模式 -->
+            <div v-if="viewMode === 'list'" class="stack" style="gap:12px">
+              <div
+                v-for="book in displayBooks" :key="book.id"
+                class="book-card pressable"
+                role="link"
+                tabindex="0"
+                :aria-label="`《${book.title}》，点击查看详情，长按打开操作面板`"
+                @pointerdown="onPressStart($event, book)"
+                @pointermove="onPressMove"
+                @pointerup="onPressEnd"
+                @pointercancel="onPressEnd"
+                @click="onCardClick(book)"
+                @contextmenu.prevent="openSheet(book)"
+                @keyup.enter="goDetail(book)"
+              >
+                <div class="book-card-main" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+                  <div class="book-card-left" style="display:flex;align-items:flex-start;gap:16px;min-width:0">
+                    <div class="shelf-cover">
+                      <BookCover :title="book.title" :author="book.author" />
+                    </div>
+                    <div class="book-card-info" style="min-width:0">
+                      <div class="book-title">{{ book.title }}</div>
+                      <div class="book-author">{{ book.author }}</div>
+                    </div>
+                  </div>
+                  <div class="book-card-actions" style="display:flex;align-items:center;gap:10px">
+                    <!-- v1.2: 阅读按钮（v1.6：填充样式 + 图标 + 圆角） -->
+                    <el-button
+                      v-if="book.chapter_count > 0"
+                      size="small"
+                      type="primary"
+                      round
+                      :icon="Reading"
+                      @click.stop="goRead(book)"
+                    >
+                      阅读
+                    </el-button>
                   </div>
                 </div>
-              </div>
-              <div class="book-card-actions" style="display:flex;align-items:center;gap:10px">
-                <!-- v1.2: 阅读按钮（v1.6：填充样式 + 图标 + 圆角） -->
-                <el-button
-                  v-if="book.chapter_count > 0"
-                  size="small"
-                  type="primary"
-                  round
-                  :icon="Reading"
-                  @click="$router.push(`/reader/${book.id}/1`)"
-                >
-                  阅读
-                </el-button>
-                <!-- 删除按钮（v1.6：plain danger 样式 + 圆角，文本颜色用自定义陶土红） -->
-                <el-button type="danger" plain round :icon="Delete" size="small" class="card-delete-btn" @click="confirmDelete(book)">
-                  删除
-                </el-button>
+                <div class="book-meta-row">
+                  <span>{{ formatDate(book.added_at) }}</span>
+                  <StatusBadge :status="book.status" />
+                  <span>{{ book.chapter_count }} 章</span>
+                  <span v-if="book.has_epub" style="color:var(--accent-ice)">.epub 可下载</span>
+                  <span v-if="book.has_txt" style="color:var(--muted)">.txt</span>
+                </div>
               </div>
             </div>
-            <div class="book-meta-row">
-              <span>{{ formatDate(book.added_at) }}</span>
-              <StatusBadge :status="book.status" />
-              <span>{{ book.chapter_count }} 章</span>
-              <span v-if="book.has_epub" style="color:var(--accent-ice)">.epub 可下载</span>
-              <span v-if="book.has_txt" style="color:var(--muted)">.txt</span>
+
+            <!-- 九宫格模式（v2.3） -->
+            <div v-else class="shelf-grid">
+              <div
+                v-for="book in displayBooks" :key="book.id"
+                class="grid-item pressable"
+                role="link"
+                tabindex="0"
+                :aria-label="`《${book.title}》，点击查看详情，长按打开操作面板`"
+                @pointerdown="onPressStart($event, book)"
+                @pointermove="onPressMove"
+                @pointerup="onPressEnd"
+                @pointercancel="onPressEnd"
+                @click="onCardClick(book)"
+                @contextmenu.prevent="openSheet(book)"
+                @keyup.enter="goDetail(book)"
+              >
+                <div class="grid-cover">
+                  <BookCover :title="book.title" :author="book.author" />
+                  <span v-if="book.is_marked" class="grid-star" title="已标记">★</span>
+                </div>
+                <div class="grid-title">{{ book.title }}</div>
+                <div class="grid-author">{{ book.author }}</div>
+              </div>
             </div>
           </div>
-        </div>
         </template>
       </div>
     </section>
@@ -163,23 +201,29 @@
         <el-button type="primary" :loading="addingBook" @click="handleAddBook">添加到书架</el-button>
       </template>
     </el-dialog>
+
+    <!-- v2.3：书籍详情底部弹层（长按唤起；标记 / 删除 / 预留扩展） -->
+    <BookActionSheet v-model="sheetVisible" :book-id="sheetBookId" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
-import { Plus, Delete, Reading } from '@element-plus/icons-vue'
-import { ElMessageBox, ElMessage } from 'element-plus'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { Plus, Reading, Grid, List } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useBooksStore } from '@/stores'
 import { formatDate } from '@/utils'
-import { checkSourceUrl, toggleMarkBook } from '@/api/books'
+import { checkSourceUrl } from '@/api/books'
 import type { Book } from '@/types'
 import TopNav from '@/components/TopNav.vue'
 import BookCover from '@/components/BookCover.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import BookActionSheet from '@/components/BookActionSheet.vue'
 
 const booksStore = useBooksStore()
+const router = useRouter()
 
 // ── v1.2 新增：筛选标签 ────────────────────────────────
 type FilterTab = 'all' | 'marked' | 'done' | 'has_epub'
@@ -195,19 +239,10 @@ const displayBooks = computed<Book[]>(() => {
   return booksStore.isClientMode ? booksStore.allBooks : booksStore.books
 })
 
-onMounted(async () => {
-  // v1.2: 预加载全量数据用于客户端搜索
-  try {
-    await booksStore.fetchAllBooks(null)
-  } catch {
-    // 全量加载失败时回退——至少保证分页数据能用
-    booksStore.searchMode = 'server'
-  }
-  try {
-    await booksStore.fetchBooks(1, 20, null)
-  } catch {
-    // 分页加载失败时静默处理，页面显示空状态
-  }
+onMounted(() => {
+  // v2.2: 缓存优先加载——首次进入才发请求，切页返回瞬间恢复；
+  // 超过 60s 未刷新时自动后台静默更新，不阻断展示
+  booksStore.ensureShelf()
 })
 
 /** 应用当前筛选标签（不含搜索关键词；v1.9 搜索已合并至主搜索框） */
@@ -219,49 +254,96 @@ function applyCurrentFilter() {
   })
 }
 
-/** 筛选标签切换 */
+/** 筛选标签切换（客户端模式本地过滤零请求；服务端模式才走分页接口） */
 function handleFilterChange(val: FilterTab) {
   if (val === 'all') {
-    // 全部：恢复全量书架
-    booksStore.fetchBooks(1, 20, null)
+    if (booksStore.isClientMode) {
+      // 全部：本地恢复全量书架，无需请求
+      booksStore.resetFilter()
+    } else {
+      booksStore.fetchBooks(1, 20, null)
+    }
   } else {
     // 仅筛选
     applyCurrentFilter()
   }
 }
 
-// ── 标记功能 v1.2 ────────────────────────────────────
-async function toggleMark(book: Book) {
-  try {
-    const { data } = await toggleMarkBook(book.id)
-    if (data.success && data.data) {
-      // 更新本地状态 — books
-      const idx = booksStore.books.findIndex(b => b.id === book.id)
-      if (idx >= 0) {
-        booksStore.books[idx] = data.data
-      }
-      // 同步更新 allBooks 缓存
-      const allIdx = booksStore.allBooks.findIndex(b => b.id === book.id)
-      if (allIdx >= 0) {
-        booksStore.allBooks[allIdx] = data.data
-      }
-      // 同步更新 filteredBooks
-      const filteredIdx = booksStore.filteredBooks.findIndex(b => b.id === book.id)
-      if (filteredIdx >= 0) {
-        booksStore.filteredBooks[filteredIdx] = data.data
-      }
-      // 同步更新 searchResults（服务端搜索模式下星标也应有反馈）
-      const srIdx = booksStore.searchResults.findIndex(b => b.id === book.id)
-      if (srIdx >= 0) {
-        booksStore.searchResults[srIdx] = data.data
-      }
-      // 标记状态变更后按书架优先级（已标记置顶 → 时间倒序）重排
-      booksStore.resortLists()
-      ElMessage.success(data.data.is_marked ? '已标记' : '已取消标记')
-    }
-  } catch (err: any) {
-    ElMessage.error(err?.response?.data?.error || '操作失败')
+// ── v2.3 视图模式：列表 / 九宫格（localStorage 持久化） ────────
+type ViewMode = 'list' | 'grid'
+const viewMode = ref<ViewMode>(localStorage.getItem('shelf_viewMode') === 'grid' ? 'grid' : 'list')
+
+function toggleViewMode() {
+  viewMode.value = viewMode.value === 'list' ? 'grid' : 'list'
+  localStorage.setItem('shelf_viewMode', viewMode.value)
+}
+
+// ── v2.3 长按唤起详情弹层（标记 / 删除已移入弹层） ────────
+const LONG_PRESS_MS = 480
+let pressTimer: ReturnType<typeof setTimeout> | null = null
+let pressX = 0
+let pressY = 0
+let suppressClick = false
+
+const sheetVisible = ref(false)
+const sheetBookId = ref<string | null>(null)
+
+function openSheet(book: Book) {
+  sheetBookId.value = book.id
+  sheetVisible.value = true
+}
+
+// 弹层关闭时清理抑制标志：覆盖「长按后滑动手指不产生 click」的边界场景，
+// 避免残留标志吞掉下一次正常点击
+watch(sheetVisible, (v) => {
+  if (!v) suppressClick = false
+})
+
+function clearPressTimer() {
+  if (pressTimer) {
+    clearTimeout(pressTimer)
+    pressTimer = null
   }
+}
+
+function onPressStart(e: PointerEvent, book: Book) {
+  // 按在卡片内按钮（阅读等）上不启动长按
+  if ((e.target as HTMLElement).closest('.el-button')) return
+  clearPressTimer()
+  pressX = e.clientX
+  pressY = e.clientY
+  pressTimer = setTimeout(() => {
+    pressTimer = null
+    suppressClick = true
+    navigator.vibrate?.(30) // 移动端长按震动反馈（设备支持时）
+    openSheet(book)
+  }, LONG_PRESS_MS)
+}
+
+/** 位移超 10px 视为滚动手势，取消长按 */
+function onPressMove(e: PointerEvent) {
+  if (Math.hypot(e.clientX - pressX, e.clientY - pressY) > 10) clearPressTimer()
+}
+
+function onPressEnd() {
+  clearPressTimer()
+}
+
+/** 单击进详情；长按后的 click 事件被抑制 */
+function onCardClick(book: Book) {
+  if (suppressClick) {
+    suppressClick = false
+    return
+  }
+  goDetail(book)
+}
+
+function goDetail(book: Book) {
+  router.push(`/detail/${book.id}`)
+}
+
+function goRead(book: Book) {
+  router.push(`/reader/${book.id}/1`)
 }
 
 // ── 添加书籍 ────────────────────────────────────
@@ -346,30 +428,11 @@ async function handleAddBook() {
   })
 }
 
-// ── 删除书籍 ────────────────────────────────────
-function confirmDelete(book: Book) {
-  ElMessageBox.confirm(
-    `确定要删除《${book.title}》吗？\`.epub\` 和 \`.txt\` 文件将同时被删除`,
-    '确认删除',
-    {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-      type: 'warning'
-    }
-  ).then(async () => {
-    try {
-      await booksStore.removeBook(book.id)
-      ElMessage.success('小说已删除')
-    } catch (err: any) {
-      ElMessage.error(err?.response?.data?.error || err.message || '删除失败')
-    }
-  }).catch(() => {})
-}
 </script>
 
 <style scoped>
 .stack { display: flex; flex-direction: column; }
-.lead { font-size: 15px; color: var(--muted); }
+.lead { font-size: 15px; color: var(--onbg-muted); }   /* v2.5.2：直置背景，自适应墨色 */
 .num { font-family: var(--font-mono); }
 
 /* ── 筛选栏 ────────────────────────────────────────── */
@@ -386,46 +449,64 @@ function confirmDelete(book: Book) {
   font-weight: 500;
 }
 
-/* 删除按钮：plain danger 描边 + 自定义陶土红文本（对齐全局 --danger 令牌） */
-.book-card-actions :deep(.card-delete-btn) {
-  --el-button-text-color: var(--danger);
-  --el-button-border-color: color-mix(in oklch, var(--danger) 40%, transparent);
-  --el-button-hover-text-color: var(--surface);
-  --el-button-hover-bg-color: var(--danger);
-  --el-button-hover-border-color: var(--danger);
-  --el-button-active-text-color: var(--surface);
-  --el-button-active-bg-color: var(--danger);
-  --el-button-active-border-color: var(--danger);
-}
-
-/* ── 标记按钮（v1.4：暖金星色 + ≥32px 目标尺寸，hover 用即时颜色反馈） ── */
-.mark-btn {
-  background: none;
-  border: none;
+/* ── v2.3 长按交互：禁选中 + 按压微缩反馈 ── */
+.pressable {
   cursor: pointer;
-  padding: 4px;
-  min-width: 32px;
-  min-height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  transition: transform 0.12s ease;
+}
+.pressable:active {
+  transform: scale(0.985);
 }
 
-.mark-btn:hover .star-empty {
+/* ── v2.3 九宫格模式 ── */
+.shelf-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px 12px;
+}
+.grid-cover {
+  position: relative;
+}
+.grid-cover :deep(.book-cover) {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 4;
+  padding: 12% 10% 10%;
+}
+.grid-cover :deep(.cover-title) {
+  font-size: 14px;
+}
+.grid-cover :deep(.cover-author) {
+  font-size: 10px;
+}
+.grid-star {
+  position: absolute;
+  top: 6px;
+  right: 8px;
   color: var(--accent-warm);
+  font-size: 14px;
+  text-shadow: 0 1px 2px color-mix(in oklch, black 35%, transparent);
 }
-
-.star {
-  font-size: 22px;
-  line-height: 1;
+.grid-title {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--onbg-title);   /* v2.5.2：直置背景，深色背景下自动换暖白淡墨 */
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
-
-.star-empty {
-  color: var(--muted);
-}
-
-.star-filled {
-  color: var(--accent-warm);
+.grid-author {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--onbg-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* ── v1.5 移动端适配 ────────────────────────────── */

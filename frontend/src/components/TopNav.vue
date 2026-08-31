@@ -11,10 +11,14 @@
      v2.1 — 智能搜索模式路由：AI 开关开启时，书架内搜索提交前按
            查询内容自动选择搜索方式（自然语言描述 → AI 语义，
            书名/作者 → 普通），不再需要手动切换模式
+     v2.4 — 「我的书架」logo 改为纯展示（不再承担跳转）；用户头像
+           点击跳转「我的」页面，原下拉菜单功能（自定义背景 / AI 搜索 /
+           修改密码 / 退出登录）全部迁入「我的」页面
      ═══════════════════════════════════════════════════════════════ -->
 <template>
   <header class="topnav">
     <div class="topnav-inner">
+      <!-- logo 纯展示（v2.4：移除跳转功能，回书架走底部 TabBar / 页内返回按钮） -->
       <div class="logo-area">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
           <path d="M4 19.5A2.5 2.5 0 016.5 17H20"/>
@@ -54,10 +58,25 @@
       </div>
 
       <div class="nav-right">
-        <router-link v-if="showBackToShelf" to="/shelf">
-          <el-button text size="small" class="nav-btn">
+        <router-link v-if="showBackToShelf" to="/shelf" class="nav-back-link">
+          <!-- v2.5.1：水墨玻璃返回按钮（移动端保留纯图标形态） -->
+          <el-button text size="small" class="nav-btn back-btn">
             <span class="nav-btn-text">← 返回书架</span>
             <span class="nav-btn-icon" aria-hidden="true">←</span>
+          </el-button>
+        </router-link>
+
+        <!-- 桌面端排行榜入口（移动端走底部 TabBar，避免重复入口；v2.0 图标换为描边奖杯） -->
+        <router-link v-if="!showBackToShelf" to="/ranking" class="desktop-ranking-link">
+          <el-button text size="small" class="nav-btn">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M8 21h8"/>
+              <path d="M12 17v4"/>
+              <path d="M7 4h10v4a5 5 0 0 1-10 0V4z"/>
+              <path d="M7 6H4a3 3 0 0 0 3 4"/>
+              <path d="M17 6h3a3 3 0 0 1-3 4"/>
+            </svg>
+            <span class="nav-btn-text">排行榜</span>
           </el-button>
         </router-link>
 
@@ -73,46 +92,15 @@
           <el-icon><Search /></el-icon>
         </el-button>
 
-        <!-- 用户头像下拉菜单：自定义背景 / 修改密码 / 退出登录（v1.8 新增背景入口） -->
-        <el-dropdown class="avatar-dropdown" trigger="click" @command="handleUserCommand">
-          <button
-            type="button"
-            class="user-avatar user-avatar-btn"
-            :aria-label="`用户菜单（${authStore.userEmail || '未登录'}），AI 搜索开关、自定义背景、修改密码或退出登录`"
-          >
-            {{ authStore.avatarLetter }}
-          </button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <!-- 图标使用全局注册的字符串名，避免组件响应式警告 -->
-              <el-dropdown-item icon="Picture" command="themeSettings">
-                <span class="dropdown-item-text">自定义背景</span>
-              </el-dropdown-item>
-              <!-- AI 搜索开关（v2.0）：开启后书架内搜索可搭配普通搜索使用 -->
-              <el-dropdown-item
-                command=""
-                class="ai-switch-item"
-                :divided="false"
-              >
-                <div class="ai-switch-row" @click.stop>
-                  <span class="dropdown-item-text">AI 搜索</span>
-                  <el-switch
-                    :model-value="shelfSearch.aiEnabled"
-                    size="small"
-                    :aria-label="`AI 搜索功能${shelfSearch.aiEnabled ? '已开启' : '已关闭'}`"
-                    @update:model-value="shelfSearch.setAiEnabled"
-                  />
-                </div>
-              </el-dropdown-item>
-              <el-dropdown-item icon="Key" command="changePassword" divided>
-                <span class="dropdown-item-text">修改个人密码</span>
-              </el-dropdown-item>
-              <el-dropdown-item icon="SwitchButton" command="logout" divided>
-                <span class="dropdown-item-text dropdown-item-text--logout">退出登录</span>
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
+        <!-- 用户头像（v2.4：点击跳转「我的」页面，原下拉菜单功能已迁入该页） -->
+        <button
+          type="button"
+          class="user-avatar user-avatar-btn"
+          :aria-label="`进入我的页面（${authStore.userEmail || '未登录'}）`"
+          @click="router.push('/profile')"
+        >
+          {{ authStore.avatarLetter }}
+        </button>
       </div>
     </div>
 
@@ -141,10 +129,6 @@
       </div>
     </div>
 
-    <!-- 修改密码弹窗（由头像下拉菜单唤起，v1.6 新增） -->
-    <ChangePasswordDialog v-model="changePasswordVisible" />
-    <!-- 自定义背景设置弹窗（v1.8 新增，显隐由 theme store 驱动） -->
-    <ThemeSettingsDialog />
   </header>
 </template>
 
@@ -153,10 +137,6 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
 import { useAuthStore, useShelfSearchStore } from '@/stores'
-import { useThemeStore } from '@/stores/theme'
-import { ElMessageBox } from 'element-plus'
-import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
-import ThemeSettingsDialog from '@/components/ThemeSettingsDialog.vue'
 
 const props = withDefaults(defineProps<{
   showSearch?: boolean
@@ -169,14 +149,12 @@ const props = withDefaults(defineProps<{
 })
 
 const authStore = useAuthStore()
-const themeStore = useThemeStore()
-/** v2.0：AI 搜索开关状态（头像菜单），开启时书架内搜索可携带 ai 参数 */
+/** v2.0：AI 搜索开关状态（v2.4 起开关本体在「我的」页，此处仅用于占位文案与搜索参数） */
 const shelfSearch = useShelfSearchStore()
 const router = useRouter()
 const searchQuery = ref('')
 const searchTarget = ref<'shelf' | 'web'>('web')
 const mobileSearchOpen = ref(false)
-const changePasswordVisible = ref(false)
 
 /** 输入框占位文案：书架内按开关状态区分自动识别 / 普通搜索（v2.1，AI 开启时自动识别） */
 const inputPlaceholder = computed(() => {
@@ -203,27 +181,6 @@ function handleSearch() {
   }
 }
 
-/** 头像下拉菜单命令分发（v1.6；v1.8 新增自定义背景入口） */
-function handleUserCommand(command: string) {
-  if (command === 'themeSettings') {
-    themeStore.openSettings()
-  } else if (command === 'changePassword') {
-    changePasswordVisible.value = true
-  } else if (command === 'logout') {
-    handleLogout()
-  }
-}
-
-function handleLogout() {
-  ElMessageBox.confirm('确定要退出登录吗？', '提示', {
-    confirmButtonText: '退出',
-    cancelButtonText: '取消',
-    type: 'info'
-  }).then(() => {
-    authStore.logout()
-    router.push('/login')
-  }).catch(() => {})
-}
 </script>
 
 <style scoped>
@@ -281,54 +238,39 @@ function handleLogout() {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: var(--accent);
-  color: var(--surface);
+  background: var(--seal);   /* v2.0：朱砂印章红，水墨点缀 */
+  color: #ffffff;
   display: grid;
   place-items: center;
   font-size: 13px;
   font-weight: 600;
   flex-shrink: 0;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.65), 0 2px 6px rgba(176, 58, 46, 0.35);
 }
 
-/* ── 用户头像按钮（v1.6：普通 span 改为按钮，充当下拉触发器） ── */
-.avatar-dropdown .user-avatar-btn {
+/* ── 用户头像按钮（v2.4：下拉触发器改为「我的」页面跳转按钮） ── */
+.user-avatar-btn {
   border: none;
   padding: 0;
   cursor: pointer;
   font-family: inherit;
 }
 
-.avatar-dropdown .user-avatar-btn:hover {
+.user-avatar-btn:hover {
   filter: brightness(1.08);
 }
 
-.avatar-dropdown .user-avatar-btn:focus-visible {
+.user-avatar-btn:focus-visible {
   outline: 2px solid var(--accent-ice);
   outline-offset: 2px;
 }
 
-.dropdown-item-text {
-  font-size: 14px;
-  margin-left: 2px;
-}
-
-.dropdown-item-text--logout {
-  color: var(--danger);
-}
-
-/* 下拉面板内分隔线对齐 Element Plus 默认内边距 */
-.avatar-dropdown :deep(.el-dropdown-menu__item) {
-  display: flex;
-  align-items: center;
-}
-
-/* AI 搜索开关行（v2.0）：文字与开关两端对齐，点击项任意位置不触发命令 */
-.ai-switch-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  gap: 16px;
+/* v2.0：导航描边图标（与 logo 同风格：1.8 描边 / 圆角线帽） */
+.nav-icon {
+  width: 16px;
+  height: 16px;
+  margin-right: 4px;
+  vertical-align: -3px;
 }
 
 /* ── 桌面搜索框：prepend 下拉与 append 按钮撑满输入框高度（v1.6） ──
@@ -396,6 +338,19 @@ function handleLogout() {
   display: none;
 }
 
+/* v2.5.1：顶栏返回按钮复用全局 .back-btn 水墨玻璃样式，
+   覆盖 el-button 默认的透明底/内边距，保持胶囊观感 */
+.nav-btn.back-btn {
+  padding: 7px 18px;
+  height: auto;
+  background: var(--surface);
+  --el-button-hover-bg-color: var(--surface);
+  --el-button-bg-color: var(--surface);
+}
+.nav-back-link {
+  text-decoration: none;
+}
+
 @media (max-width: 900px) {
   .desktop-search-box { flex: 0 1 320px; }
 }
@@ -405,6 +360,9 @@ function handleLogout() {
   .desktop-search-box { display: none; }
   .mobile-search-toggle { display: inline-flex; }
   .mobile-search-row { display: block; }
+
+  /* 排行榜入口仅桌面端显示，移动端走底部 TabBar */
+  .desktop-ranking-link { display: none; }
 
   /* 操作按钮压缩为图标（触摸目标 ≥36px） */
   .nav-btn-text { display: none; }

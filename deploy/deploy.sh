@@ -57,7 +57,7 @@ if [ ! -f "$APP_DIR/backend/.env" ]; then
     SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
     cat > "$APP_DIR/backend/.env" <<EOF
 JWT_SECRET=$SECRET
-CORS_ORIGINS=["https://localhost","capacitor://localhost","http://$DOMAIN_OR_IP","https://$DOMAIN_OR_IP"]
+CORS_ORIGINS=["http://localhost","https://localhost","capacitor://localhost","http://$DOMAIN_OR_IP","https://$DOMAIN_OR_IP"]
 EOF
     echo "   已生成随机 JWT_SECRET"
 else
@@ -95,6 +95,9 @@ echo "  移动端启用：把 frontend/src/config.ts 的 MOBILE_API_BASE"
 echo "  改为 http://$DOMAIN_OR_IP 后重新构建 APK"
 echo ""
 echo "  提醒 1：阿里云控制台【安全组】需放行 80/443 端口"
+echo "  提醒 2：若此前部署过旧版本，.env 中的 CORS_ORIGINS 不会自动更新；"
+echo "         移动端搜索跨域报错时，请手动在 $APP_DIR/backend/.env 中把"
+echo "         CORS_ORIGINS 补上 http://localhost 后重启: systemctl restart novel-backend"
 if [ "$DOMAIN_OR_IP" != "_" ] && [[ ! "$DOMAIN_OR_IP" =~ ^[0-9.]+$ ]]; then
     echo "  提醒 2：域名启用 HTTPS 执行："
     echo "    apt install -y certbot python3-certbot-nginx"

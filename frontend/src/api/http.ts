@@ -6,9 +6,10 @@ import type { ApiResponse } from '@/types'
 import { MOBILE_API_BASE } from '@/config'
 
 // 检测运行环境：Electron 桌面 / Capacitor 移动 / Web
+// 注意：Capacitor 8 起全局对象无 isNative 布尔属性，只有 isNativePlatform() 方法
 const electronAPI = (window as any).electronAPI
 const isCapacitor =
-  !!(window as any).Capacitor?.isNative ||
+  !!(window as any).Capacitor?.isNativePlatform?.() ||
   window.location.origin === 'http://localhost' ||
   window.location.origin === 'https://localhost'
 

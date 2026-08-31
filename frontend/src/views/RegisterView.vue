@@ -62,6 +62,7 @@ import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useAuthStore } from '@/stores'
+import { passwordComplexityValidator } from '@/utils'
 
 const authStore = useAuthStore()
 const router = useRouter()
@@ -75,19 +76,6 @@ const form = reactive({
   password: '',
   confirmPassword: ''
 })
-
-/** 密码验证函数 */
-const validatePassword = (_rule: any, value: string, callback: Function) => {
-  if (value.length < 8 || value.length > 64) {
-    callback(new Error('密码长度需为 8-64 位'))
-  } else if (!/[a-zA-Z]/.test(value)) {
-    callback(new Error('密码需包含至少一个字母'))
-  } else if (!/[0-9]/.test(value)) {
-    callback(new Error('密码需包含至少一个数字'))
-  } else {
-    callback()
-  }
-}
 
 const validateConfirm = (_rule: any, value: string, callback: Function) => {
   if (value !== form.password) {
@@ -104,7 +92,7 @@ const rules: FormRules = {
   ],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
-    { validator: validatePassword, trigger: 'blur' }
+    { validator: passwordComplexityValidator, trigger: 'blur' }
   ],
   confirmPassword: [
     { required: true, message: '请再次输入密码', trigger: 'blur' },

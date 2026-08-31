@@ -29,6 +29,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.books import router as books_router
 from app.api.v1.books import crawl_source_router
 from app.api.v1.ai import router as ai_router
+from app.api.v1.ranking import router as ranking_router
 from app.config import settings
 from app.database import Base, engine
 from app.middleware.error_handler import (
@@ -85,6 +86,7 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(books_router, prefix="/api/v1")
 app.include_router(crawl_source_router, prefix="/api/v1")
 app.include_router(ai_router, prefix="/api/v1")
+app.include_router(ranking_router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["系统"], summary="健康检查")

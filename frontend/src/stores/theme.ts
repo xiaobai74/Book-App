@@ -83,10 +83,16 @@ export interface ActiveBackground {
   imageName: string | null
   /** 运行时生成的 object URL（不持久化，启动时异步恢复） */
   imageUrl: string | null
+  /** 背景透明度（0.2~1，v2.5.1 新增）：控制背景场景层不透明度，
+      宣纸纹理层恒定不受影响 */
+  bgOpacity: number
 }
 
 export const PARTICLE_MIN = 0
 export const PARTICLE_MAX = 48
+/** 背景透明度取值范围（百分比形式供设置弹窗滑杆使用） */
+export const BG_OPACITY_MIN = 0.2
+export const BG_OPACITY_MAX = 1
 const STORAGE_KEY = 'app_background_theme_v1'
 
 /** 预设主题包（Colorful 思路：出厂内置，一键切换） */
@@ -199,7 +205,56 @@ export const DEFAULT_BACKGROUND: ActiveBackground = {
   particleCount: 9,
   imageId: null,
   imageName: null,
-  imageUrl: null
+  imageUrl: null,
+  bgOpacity: 1
+}
+
+/** hex 颜色相对亮度（0~1，WCAG 线性化公式），用于背景明暗判定（v2.5.2） */
+function hexLuminance(hex: string): number {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
+  if (!m) return 1
+  const int = parseInt(m[1], 16)
+  const lin = [(int >> 16) & 255, (int >> 8) & 255, int & 255].map((c) => {
+    const s = c / 255
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4)
+  })
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+}
+
+/** 背景明暗检测（v2.5.2）：向 <html> 写入 data-bg-tone='dark'|'light'，
+    CSS 据此将直置在背景上的文字（页头标题/九宫格书名/空状态等）
+    在浓墨与淡墨（暖白）间切换，任意自定义背景下均可读。
+    调色板背景取底色与深景加权亮度；图片背景缩样 16×16 异步采样平均亮度 */
+function updateBgTone(scene: BackgroundScene, palette: BackgroundPalette, imageUrl: string | null) {
+  const root = document.documentElement
+  if (scene === 'image' && imageUrl) {
+    const img = new Image()
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = 16
+        canvas.height = 16
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        ctx.drawImage(img, 0, 0, 16, 16)
+        const data = ctx.getImageData(0, 0, 16, 16).data
+        let sum = 0
+        for (let i = 0; i < data.length; i += 4) {
+          sum += (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255
+        }
+        root.setAttribute('data-bg-tone', sum / (data.length / 4) < 0.45 ? 'dark' : 'light')
+      } catch {
+        root.setAttribute('data-bg-tone', 'light')
+      }
+    }
+    img.src = imageUrl
+    return
+  }
+  const lum =
+    scene === 'none'
+      ? hexLuminance(palette.bg)
+      : hexLuminance(palette.bg) * 0.55 + hexLuminance(palette.sceneDeep) * 0.45
+  root.setAttribute('data-bg-tone', lum < 0.4 ? 'dark' : 'light')
 }
 
 /** 按预设 id 查预设（找不到返回 undefined） */
@@ -217,6 +272,8 @@ interface PersistedBackground {
   particleCount: number
   imageId: string | null
   imageName: string | null
+  /** v2.5.1 新增；旧版持久化数据可能缺失，读取时兜底 1 */
+  bgOpacity?: number
 }
 
 function isBackgroundPalette(v: unknown): v is BackgroundPalette {
@@ -253,7 +310,12 @@ function loadPersisted(): ActiveBackground {
           particleCount: Math.min(PARTICLE_MAX, Math.max(PARTICLE_MIN, parsed.particleCount)),
           imageId: parsed.imageId,
           imageName: parsed.imageName,
-          imageUrl: null // 运行时由 restoreImage() 异步恢复
+          imageUrl: null, // 运行时由 restoreImage() 异步恢复
+          // v2.5.1：旧数据无此字段时兜底不透明；越界值裁剪到合法区间
+          bgOpacity:
+            typeof parsed.bgOpacity === 'number'
+              ? Math.min(BG_OPACITY_MAX, Math.max(BG_OPACITY_MIN, parsed.bgOpacity))
+              : 1
         }
       }
     }
@@ -289,10 +351,14 @@ export const useThemeStore = defineStore('theme', () => {
     })
   }
 
-  /** 应用当前背景（色板 + 场景） */
+  /** 应用当前背景（色板 + 场景 + 背景透明度） */
   function applyActive() {
     applyPalette(active.value.palette)
     document.documentElement.style.setProperty('--theme-scene', active.value.scene)
+    // v2.5.1：背景透明度写入 CSS 变量，由 ThemeBackground 场景层消费（恒定默认 1）
+    document.documentElement.style.setProperty('--theme-bg-opacity', String(active.value.bgOpacity))
+    // v2.5.2：背景明暗检测 → html[data-bg-tone]，直置文字浓/淡墨自适应
+    updateBgTone(active.value.scene, active.value.palette, active.value.imageUrl)
   }
 
   /** 释放旧图片 object URL（防止内存泄漏；仅释放本 store 创建的 blob: URL） */
@@ -307,6 +373,8 @@ export const useThemeStore = defineStore('theme', () => {
     revokeImageUrl(active.value.imageUrl)
     const url = URL.createObjectURL(blob)
     active.value.imageUrl = url
+    // v2.5.2：图片背景换图后重新采样明暗
+    updateBgTone('image', active.value.palette, url)
     return url
   }
 
@@ -331,6 +399,7 @@ export const useThemeStore = defineStore('theme', () => {
     preview.value = { scene, palette: { ...palette } }
     applyPalette(palette)
     document.documentElement.style.setProperty('--theme-scene', scene)
+    updateBgTone(scene, palette, null)
   }
 
   /** 清除预览，恢复正式生效背景 */
@@ -402,7 +471,8 @@ export const useThemeStore = defineStore('theme', () => {
       particles: active.value.particles,
       particleCount: active.value.particleCount,
       imageId: active.value.imageId,
-      imageName: active.value.imageName
+      imageName: active.value.imageName,
+      bgOpacity: active.value.bgOpacity
     }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
@@ -424,7 +494,9 @@ export const useThemeStore = defineStore('theme', () => {
       particleCount: active.value.particleCount,
       imageId: active.value.imageId,
       imageName: active.value.imageName,
-      imageUrl: active.value.imageUrl
+      imageUrl: active.value.imageUrl,
+      // v2.5.1：背景透明度不随预设切换重置（用户偏好独立于主题）
+      bgOpacity: active.value.bgOpacity
     }
     preview.value = null
     applyActive()
@@ -467,11 +539,12 @@ export const useThemeStore = defineStore('theme', () => {
     }
   }
 
-  /** 重置为默认预设（水墨雪景）。
+  /** 重置为默认预设（水墨雪景）+ 恢复背景不透明（v2.5.1）。
       applyPreset 会保留 imageId/imageName 并释放 URL，图片记录仍在，
       用户可在设置弹窗一键切回自己的图片 */
   function resetToDefault() {
     applyPreset(THEME_PRESETS[0])
+    setBgOpacity(BG_OPACITY_MAX)
   }
 
   /** 切换粒子开关并持久化 */
@@ -484,6 +557,14 @@ export const useThemeStore = defineStore('theme', () => {
   function setParticleCount(count: number) {
     const clamped = Math.min(PARTICLE_MAX, Math.max(PARTICLE_MIN, Math.round(count)))
     active.value.particleCount = clamped
+    persist()
+  }
+
+  /** 设置背景透明度（0.2~1，边界裁剪 + 即时生效 + 持久化，v2.5.1） */
+  function setBgOpacity(opacity: number) {
+    const clamped = Math.min(BG_OPACITY_MAX, Math.max(BG_OPACITY_MIN, opacity))
+    active.value.bgOpacity = clamped
+    document.documentElement.style.setProperty('--theme-bg-opacity', String(clamped))
     persist()
   }
 
@@ -522,6 +603,7 @@ export const useThemeStore = defineStore('theme', () => {
     resetToDefault,
     setParticles,
     setParticleCount,
+    setBgOpacity,
     openSettings,
     closeSettings
   }

@@ -54,7 +54,10 @@ class Settings(BaseSettings):
         "http://127.0.0.1:*",
         "file://",
         "null",
-        "https://localhost",        # Capacitor Android WebView 源
+        # Capacitor WebView 源：androidScheme 为 http 时是 http://localhost，
+        # 为 https 时是 https://localhost（iOS 用 capacitor://localhost），全部放行
+        "http://localhost",         # Capacitor Android WebView 源（androidScheme: 'http'）
+        "https://localhost",        # Capacitor Android WebView 源（androidScheme: 'https'）
         "capacitor://localhost",    # Capacitor iOS WebView 源
     ]
 

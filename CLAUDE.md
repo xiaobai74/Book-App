@@ -266,7 +266,7 @@ v2.3 Windows 桌面版（Electron + PyInstaller，SQLite 本地数据）+ 抓取
 - `backend/app/config.py`：默认 `sqlite+aiosqlite:///{DATA_DIR}/novel_manager.db`（`platformdirs` 定位 `%AppData%/NovelManager` 并自动创建；`.env` 的 `DATABASE_URL` 可覆盖回 MySQL）；`epub_output_dir`/`txt_output_dir` 迁至用户数据目录
 - `backend/app/database.py`：按 URL 前缀分支创建引擎（SQLite 用 `check_same_thread=False`，MySQL 用连接池参数）
 - `backend/app/main.py` lifespan：SQLite 首次启动自动建表（`Base.metadata.create_all`，免手动迁移）；关闭时 `engine.dispose()` 释放连接池
-- CORS 新增：`http://localhost:*`、`http://127.0.0.1:*`、`file://`、`null`、`https://localhost`、`capacitor://localhost`（桌面 file:// 与 Capacitor WebView 源）
+- CORS 新增：`http://localhost:*`、`http://127.0.0.1:*`、`file://`、`null`、`https://localhost`、`capacitor://localhost`（桌面 file:// 与 Capacitor WebView 源；v2.3.1 补 `http://localhost` — Android WebView 实际源，`androidScheme: 'http'`）
 - `backend/rules/rule_engine.py`：frozen 模式内置规则从 `sys._MEIPASS/rules` 读取；自定义规则 `custom_sources.json` 持久化到用户数据目录（重启不丢失）
 - `backend/requirements.txt`：新增 `aiosqlite`、`platformdirs`、`pyinstaller`
 - `backend/app/services/epub_service.py` / `txt_service.py`：输出目录改由 `settings` 统一配置
@@ -277,6 +277,59 @@ v2.3 Windows 桌面版（Electron + PyInstaller，SQLite 本地数据）+ 抓取
 
 ### 部署脚本
 - 新增 `deploy/deploy.sh` + `deploy/nginx-novel.conf` + `deploy/novel-backend.service`：移动版云端后端一键部署（nginx 反代 + systemd 服务）
+
+## v2.3.1 变更（✅ 已完成）
+
+v2.3.1 修复移动端搜索不可用（CORS 拦截）：
+
+- 根因：Android WebView 实际源为 `http://localhost`（`frontend/capacitor.config.ts` 的 `androidScheme: 'http'`），后端 CORS 白名单仅放行 `https://localhost` → 带 Authorization 头的请求预检 400，移动端书架/搜索/详情全部请求被浏览器拦截（Web 端走 Vite 代理、桌面端 file:// 在白名单，故只有移动端受影响）
+- `backend/app/config.py`：默认 CORS 白名单补 `http://localhost`（保留 `https://localhost`、`capacitor://localhost`）
+- `deploy/deploy.sh`：`.env` 模板同步补 `http://localhost`；新增部署提示——旧版本部署的服务器 `.env` 不会自动更新，需手动补该源后 `systemctl restart novel-backend`（云端后端生效的关键步骤）
+- `frontend/capacitor.config.ts`：注释更正为与实际源一致
+- 本地实证：修复前 `Origin: http://localhost` 预检 400、响应无 `access-control-allow-origin`；修复后预检 200、响应头正确回显 `http://localhost`
+- 注意：`backend/.env` 的 `CORS_ORIGINS` 会覆盖 `config.py` 默认值（pydantic-settings 优先级），本地开发 .env 已同步更新
+- 注意：云端 ECS 停止再启动后按量付费公网 IP 会变（曾由 47.120.32.118 变为 47.120.44.192），届时需同步更新 `frontend/src/config.ts` 的 `MOBILE_API_BASE` 并重新打包 APK
+
+## v2.4 变更（✅ 已完成）
+
+v2.4 「我的」页面重构：原顶栏头像下拉菜单功能迁入独立的 /profile 页面，顶栏头像改为页面跳转：
+
+- `frontend/src/views/ProfileView.vue`：由占位页升级为完整页面——用户信息卡片（头像首字母 + 邮箱）+ App 设置列表（自定义背景 / AI 搜索开关 / 修改个人密码 / 退出登录），页内不设标题；设置项触摸目标 ≥48px；挂载 `ChangePasswordDialog` 与 `ThemeSettingsDialog`（原顶栏挂载点迁入）；退出登录确认逻辑同原菜单行为（确认 → 清 Token → `/login`）
+- `frontend/src/components/TopNav.vue`：「我的书架」logo 由 `router-link` 改为纯展示 `div`（移除跳转功能，回书架走底部 TabBar / 页内返回按钮）；移除头像 `el-dropdown` 下拉菜单，头像改为按钮 `router.push('/profile')`；删除 `handleUserCommand`/`handleLogout`/`changePasswordVisible` 及两个弹窗组件引用（仅保留 `shelfSearch` 供占位文案与搜索参数）
+- 路由/TabBar 无需改动：`/profile` 路由（`showTabBar: true`）与底部 TabBar「我的」入口（书架/排行榜/我的）已提前就位，本次只补齐页面内容；桌面端「我的」页内提供「返回书架」链接（≤760px 隐藏，移动端由 TabBar 承担）
+- 接口无变化；验证：`npm run build`（vue-tsc）通过 + 70/70 单测通过；文档同步：PRD（AUTH-004 / SHELF-004 / AI-001 / 页面结构图 / 版本表）
+- 注意：前端测试计划中「2.8 顶栏头像下拉菜单（FE-USER-xx）」用例已失效，对应功能验证改在「我的」页面进行（用例未改，待测试计划下轮修订）
+
+## v2.5 变更（✅ 已完成）
+
+v2.5 水墨玻璃拟态视觉升级（web 端 + 移动端全部页面，设计系统 global.css v2.0）：
+
+- `frontend/src/styles/global.css`：新增墨色令牌（`--ink`/`--ink-soft` 浓淡墨、`--seal` 朱砂印章红）、毛玻璃令牌（`--glass-blur: blur(18px) saturate(1.5)` 固定常量、`--glass-border`）、层次令牌（`--shadow-glass`/`--shadow-glass-hover` 墨影）；`--surface` 由纯白升级为 `rgba(255,255,255,0.66)` 玻璃底（所有引用处自动毛玻璃化，质感恒定不随自定义背景变化）；全局集中给 `.topnav/.tabbar/.book-card/.search-card/.auth-card/.source-card/.rank-item/.sheet-panel/.profile-*/.card/.external-result-card/.ai-summary-card/.mobile-search-row` 叠 `backdrop-filter`；新增 `.ink-title` 笔锋短线标题类；标题字体改宋体系（`--font-heading`）；主色加深为黛蓝 #2e688a，`--muted`/`--danger`/`--success` 全部加深提对比；EP 覆盖：控件边框加深（≥3:1）、`.el-dialog` 毛玻璃化、输入控件强制实心白底保可读、主按钮加粗 + 墨影突出；`.book-card` 悬浮加深层次；顶栏细条渐变改墨→黛→朱砂；logo 改浓墨宋体；头像改朱砂印章红 + 白圈描边；顶栏排行榜入口 🏆 emoji 换为同风格描边 SVG 奖杯
+- `frontend/src/components/ThemeBackground.vue`：新增恒定宣纸纹理层 `.glass-veil`（SVG fractalNoise 噪点 + 底部轻雾，参数固定），任何背景主题下画面质感一致，与玻璃卡片共同构成水墨层次（需求：毛玻璃质感不随背景改变）
+- `frontend/src/components/TabBar.vue`：毛玻璃底；未选中淡墨、选中黛蓝 + 图标上方笔锋短线指示（`.tab-item.active::before`）
+- `frontend/src/views/ProfileView.vue`：头像改朱砂印章（白圈 + 宋体首字母）；设置项图标加黛蓝水墨圆角垫（退出登录为陶土红垫）；卡片玻璃高光描边；`--text-muted` 降级色全部换 `var(--muted)`
+- `frontend/src/views/RankingView.vue`：两级标题加 `.ink-title`；源站卡片玻璃高光描边 + 悬浮加深墨影；榜单序号徽标改墨色，前三名改朱砂印章红 + 投影突出；次级文字换 `var(--muted)`
+- `frontend/src/views/ShelfView.vue` / `SearchView.vue` / `CrawlSourcesView.vue`：页面主标题加 `.ink-title` 笔锋短线；九宫格书名改浓墨提对比；登录/注册页 `.auth-card` 自动玻璃化（全局规则）
+- 阅读器（ReaderView）纸感配色与自定义背景主题机制（theme store / 预设 / 粒子）均不变；接口无变化；验证：`npm run build`（vue-tsc）通过 + 70/70 单测通过；文档同步：PRD 版本表新增 v2.5 行
+
+## v2.5.1 变更（✅ 已完成）
+
+水墨玻璃体验三项打磨：
+
+- **统一水墨玻璃返回按钮**：`global.css` 新增 `.back-btn`（胶囊形玻璃药丸：半透明玻璃底 + 白描边 + 墨色文字 + 悬浮黛蓝描边提亮），并加入 150ms 微交互白名单。接入点：顶栏返回（TopNav）、搜索页两处、源站管理页底部、排行榜两级返回（返回书架 / 返回源站列表）、「我的」页返回链接；阅读器纸感页内返回按钮保持原样不动。原 `el-button text` 样式全部替换为原生 `button` / `router-link`，无接口变化。
+- **文字防背景混淆**：新增全局 `.glass-panel` 玻璃面板托底，接入书架 / 搜索 / 源站管理 / 排行榜四处页头；`.empty-state` 改为玻璃卡（任意背景下可读）。用户更换深色图片背景后，所有页头标题与辅助文字仍在玻璃面上。
+- **背景透明度设置**：theme store 新增 `bgOpacity`（0.2~1，越界裁剪、持久化、旧数据兜底 1，随预设/重置/存储全链路生效）；`ThemeBackground.vue` 场景层包入 `.theme-bg-content` 消费 `--theme-bg-opacity`，宣纸纹理层恒定不受影响；设置弹窗新增「背景透明度」滑杆（20%~100%，步进 5%，即时生效），「恢复默认」同时重置为 100%。
+- 验证：`npm run build`（vue-tsc）7.25s 通过 + 70/70 单测通过；文档同步：PRD 版本表新增 v2.5.1 行。注意：本轮改动未打包进 APK，真机验证需重新打包
+
+## v2.5.2 变更（✅ 已完成）
+
+按用户反馈废弃 v2.5.1 的灰块玻璃面板方案，改为背景明暗自适应墨色 + 按钮全面玻璃化：
+
+- **废弃 `.glass-panel` 灰块托底**：书架/搜索/源站/排行榜页头恢复直置背景；`.empty-state` 同步去玻璃卡。
+- **背景明暗自适应墨色**：theme store 新增 `updateBgTone()`——调色板背景按底色+深景加权亮度（WCAG 线性化）判定，图片背景缩样 16×16 canvas 异步采样平均亮度；向 `<html>` 写入 `data-bg-tone='dark'|'light'`。global.css 新增 `--onbg-title/--onbg-text/--onbg-muted` 变量组（默认=浓墨；dark 时=暖白淡墨 #f5f2e9 系），接入 `.ink-title`（含笔锋短线）、`.lead`、`.pagefoot`、`.empty-state`、九宫格 `.grid-title/.grid-author`、搜索/源站页直置提示文字、`.cache-tip`。玻璃卡片内文字不受影响（仍走 --ink/--muted）。
+- **按钮全面水墨玻璃化**：默认 `.el-button` 半透明玻璃底+白描边+墨色文字+悬浮黛蓝提亮；`.el-button--primary` 黛蓝玻璃光泽（顶部高光+底部加深+内高光）；text/link 型保持透明；筛选标签 `.el-radio-button` 玻璃分段（选中黛蓝填充+墨影）；分页器玻璃化。`.back-btn` 不变。
+- 验证：`npm run build` 6.51s 通过 + 70/70 单测通过；文档同步：PRD 版本表新增 v2.5.2 行
+
 
 ## 自定义约束
 

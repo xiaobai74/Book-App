@@ -84,6 +84,7 @@ import { Search } from '@element-plus/icons-vue'
 import { ElInput } from 'element-plus'
 import { useBooksStore } from '@/stores'
 import { getRecentBookIds, recordRecentBook, MAX_RECENT } from '@/utils/recentBooks'
+import { escapeHtml } from '@/utils'
 import type { Book } from '@/types'
 
 const router = useRouter()
@@ -223,10 +224,6 @@ function highlightMatch(text: string): string {
   const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const regex = new RegExp(`(${escaped})`, 'gi')
   return escapeHtml(text).replace(regex, '<mark class="palette-highlight">$1</mark>')
-}
-
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 </script>
 

@@ -4,9 +4,10 @@
 import { createRouter, createWebHistory, createWebHashHistory } from 'vue-router'
 
 // 原生容器环境（Electron 桌面 / Capacitor 移动）用 hash 模式，Web 用 history 模式
+// 注意：Capacitor 8 起全局对象无 isNative 布尔属性，只有 isNativePlatform() 方法
 const isNative =
   !!(window as any).electronAPI?.isElectron ||
-  !!(window as any).Capacitor?.isNative ||
+  !!(window as any).Capacitor?.isNativePlatform?.() ||
   window.location.origin === 'http://localhost' ||
   window.location.origin === 'https://localhost'
 
@@ -33,7 +34,19 @@ const router = createRouter({
       path: '/shelf',
       name: 'Shelf',
       component: () => import('@/views/ShelfView.vue'),
-      meta: { requiresAuth: true }
+      meta: { requiresAuth: true, showTabBar: true }
+    },
+    {
+      path: '/ranking',
+      name: 'Ranking',
+      component: () => import('@/views/RankingView.vue'),
+      meta: { requiresAuth: true, showTabBar: true }
+    },
+    {
+      path: '/profile',
+      name: 'Profile',
+      component: () => import('@/views/ProfileView.vue'),
+      meta: { requiresAuth: true, showTabBar: true }
     },
     {
       path: '/search',

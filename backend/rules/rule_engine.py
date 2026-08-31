@@ -82,7 +82,7 @@ class RuleEngine:
             return
 
         self._rules = []
-        for i, rule in enumerate(raw_rules):
+        for rule in raw_rules:
             if not isinstance(rule, dict):
                 continue
             if rule.get("disabled"):
@@ -94,8 +94,10 @@ class RuleEngine:
             if domain:
                 self._rules_by_domain[domain] = rule
 
-            # 按 ID 索引
-            self._rules_by_id[i] = rule
+            # 按 ID 索引（用压缩后的索引，与 list_sources / list_ranking_sources
+            # / list_searchable_sources 的 enumerate(_rules) 保持一致，
+            # 避免禁用规则造成的索引错位）
+            self._rules_by_id[len(self._rules) - 1] = rule
 
         self._loaded = True
         logger.info(f"已加载 {len(self._rules)} 条源站规则 (来自 {filename})")
@@ -269,6 +271,31 @@ class RuleEngine:
             if "search" in r and not (r.get("search") or {}).get("disabled", False):
                 result.append((i + len(self._rules), r))
         return result
+
+    def list_ranking_sources(self) -> list[dict[str, Any]]:
+        """返回所有支持排行榜的源站（规则中含非空 ranking.boards）。"""
+        sources: list[dict[str, Any]] = []
+        for i, r in enumerate(self._rules):
+            boards = (r.get("ranking") or {}).get("boards") or []
+            if boards:
+                sources.append({
+                    "id": i,
+                    "name": r.get("name", "未知"),
+                    "url": r.get("url", ""),
+                    "board_names": [b.get("name", "榜单") for b in boards],
+                    "is_custom": False,
+                })
+        for i, r in enumerate(self._custom_rules):
+            boards = (r.get("ranking") or {}).get("boards") or []
+            if boards:
+                sources.append({
+                    "id": i + len(self._rules),
+                    "name": r.get("name", "未知"),
+                    "url": r.get("url", ""),
+                    "board_names": [b.get("name", "榜单") for b in boards],
+                    "is_custom": True,
+                })
+        return sources
 
     @property
     def rules(self) -> list[dict[str, Any]]:

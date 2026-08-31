@@ -1,5 +1,9 @@
 <!-- ═══════════════════════════════════════════════════════════════
      小说管理App · 书籍详情页面
+     v2.3 — 缓存优先加载：基础信息从书架缓存即时展示，详情/章节/
+           AI 摘要按书缓存（books store），书架⇄详情⇄阅读器来回
+           切换零等待零重复请求；章节与摘要改为并行加载；
+           抓取完成/标记等变更本地同步缓存与书架列表
      ═══════════════════════════════════════════════════════════════ -->
 <template>
   <div>
@@ -7,14 +11,14 @@
 
     <section class="section">
       <div class="container">
-        <!-- 加载中 -->
-        <div v-if="booksStore.loading && !book" class="empty-state">
+        <!-- 加载中（仅完全无缓存且正在拉取时展示） -->
+        <div v-if="pageLoading && !book" class="empty-state">
           <div class="loading-bar"></div>
           <p style="margin-top:12px">加载中…</p>
         </div>
 
         <!-- 不存在 -->
-        <div v-else-if="!book && !booksStore.loading" class="empty-state">
+        <div v-else-if="!book && !pageLoading" class="empty-state">
           <p>该书籍不存在或已被删除</p>
           <el-button type="primary" style="margin-top:16px" @click="$router.push('/shelf')">返回书架</el-button>
         </div>
@@ -26,7 +30,7 @@
           <!-- 书籍信息卡片 -->
           <div class="card" style="margin-bottom:24px">
             <div class="detail-header">
-              <div class="detail-info" style="flex:1">
+              <div class="detail-info">
                 <!-- v1.3 修复: PRD 要求详情页有星标标记按钮（原仅书架列表页可标记） -->
                 <h1 style="font-size:clamp(28px,4vw,36px);font-weight:700;display:inline-flex;align-items:center;gap:10px">
                   {{ book.title }}
@@ -117,7 +121,7 @@
           </div>
 
           <!-- AI 摘要区块 v1.3 -->
-          <div v-if="book" class="card ai-summary-card">
+          <div class="card ai-summary-card">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
               <h3 style="font-size:18px;font-weight:600;margin:0">🤖 AI 摘要</h3>
               <span v-if="aiSummaryAt" style="font-size:12px;color:var(--muted)">{{ formatDate(aiSummaryAt) }}</span>
@@ -148,10 +152,10 @@
             <!-- 未生成 - 显示生成按钮 -->
             <div v-else style="padding:8px 0;text-align:center">
               <p style="font-size:13px;color:var(--muted);margin-bottom:12px">让 AI 阅读章节样本，自动生成情节摘要和角色列表</p>
-              <el-button type="primary" @click="handleGenerateSummary" :loading="aiSummaryLoading" :disabled="!book || book.chapter_count === 0">
+              <el-button type="primary" @click="handleGenerateSummary" :loading="aiSummaryLoading" :disabled="book.chapter_count === 0">
                 🤖 生成 AI 摘要
               </el-button>
-              <p v-if="book && book.chapter_count === 0" style="font-size:11px;color:var(--muted);margin-top:6px">需要先抓取章节内容</p>
+              <p v-if="book.chapter_count === 0" style="font-size:11px;color:var(--muted);margin-top:6px">需要先抓取章节内容</p>
             </div>
           </div>
 
@@ -182,11 +186,12 @@ import { ElMessage } from 'element-plus'
 import { ArrowDown } from '@element-plus/icons-vue'
 import { useBooksStore } from '@/stores'
 import { formatDate } from '@/utils'
+import { downloadEbook } from '@/utils/download'
 import type { Book, ChapterSummary } from '@/types'
 import TopNav from '@/components/TopNav.vue'
 import BookCover from '@/components/BookCover.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
-import { getDownloadUrl, getChapters, getReadingProgress, generateAiSummary, getAiSummary, toggleMarkBook } from '@/api/books'
+import { getChapters, getReadingProgress, generateAiSummary, getAiSummary, toggleMarkBook } from '@/api/books'
 
 const route = useRoute()
 const router = useRouter()
@@ -194,6 +199,8 @@ const booksStore = useBooksStore()
 
 const book = ref<Book | null>(null)
 const chapters = ref<ChapterSummary[]>([])
+/** 首次加载且无任何缓存可展示时为 true（v2.3） */
+const pageLoading = ref(false)
 const crawling = ref(false)
 const crawlProgressVisible = ref(false)
 const crawlText = ref('')
@@ -235,18 +242,44 @@ onMounted(async () => {
     book.value = null
     return
   }
+
+  // v2.3 缓存优先：基础信息从书架缓存恢复、章节从详情缓存恢复、
+  // 已生成的摘要直接展示——命中即瞬间展示，零请求
+  const cached = booksStore.getCachedDetail(id)
+  book.value = cached?.book ?? booksStore.findShelfBook(id)
+  if (cached) chapters.value = cached.chapters
+
+  const cachedSummary = booksStore.getCachedSummary(id)
+  if (cachedSummary) {
+    aiSummary.value = cachedSummary.text
+    aiSummaryAt.value = cachedSummary.at
+    aiSummaryStatus.value = 'done'
+  }
+
+  if (cached) {
+    // 详情缓存命中：不重复请求（抓取完成/标记等变更已本地同步缓存）
+    if (cached.book.status === 'crawling') startCrawlPolling(id)
+    if (!cachedSummary) checkAiSummary(id)  // 摘要未缓存时补一次
+    return
+  }
+
+  // 无详情缓存：后台静默拉取（基础信息已展示时不显示骨架）
+  pageLoading.value = true
   try {
-    const result = await booksStore.fetchBookDetail(id)
-    book.value = result
-    // 加载章节列表 v1.2
-    await loadChapters()
-    // 检查 AI 摘要 v1.3
-    await checkAiSummary(id)
+    const result = await booksStore.fetchBookDetail(id, true)
+    if (result) book.value = result
     if (result?.status === 'crawling') {
       startCrawlPolling(id)
     }
+    // 章节列表与 AI 摘要并行加载（原为串行三连请求）
+    await Promise.all([
+      loadChapters(),
+      cachedSummary ? Promise.resolve() : checkAiSummary(id)
+    ])
   } catch {
-    book.value = null
+    // 拉取失败时 book 保持 null，模板展示「不存在」状态
+  } finally {
+    pageLoading.value = false
   }
 })
 
@@ -259,6 +292,7 @@ async function checkAiSummary(bookId: string) {
         aiSummary.value = data.data.ai_summary
         aiSummaryAt.value = data.data.ai_summary_at || null
         aiSummaryStatus.value = 'done'
+        booksStore.cacheSummary(bookId, data.data.ai_summary, data.data.ai_summary_at || null)
       } else if (data.data.status === 'generating' || data.data.status === 'queued') {
         aiSummaryStatus.value = data.data.status
         startSummaryPolling(bookId)
@@ -284,6 +318,9 @@ async function handleGenerateSummary() {
         aiSummary.value = data.data.ai_summary || null
         aiSummaryAt.value = data.data.ai_summary_at || null
         aiSummaryStatus.value = 'done'
+        if (data.data.ai_summary) {
+          booksStore.cacheSummary(book.value.id, data.data.ai_summary, data.data.ai_summary_at || null)
+        }
         return
       }
       if (data.data.status === 'queued' || data.data.status === 'generating') {
@@ -320,6 +357,7 @@ function startSummaryPolling(bookId: string) {
           aiSummary.value = data.data.ai_summary
           aiSummaryAt.value = data.data.ai_summary_at || null
           aiSummaryStatus.value = 'done'
+          booksStore.cacheSummary(bookId, data.data.ai_summary, data.data.ai_summary_at || null)
           stopSummaryPolling()
         } else if (data.data.status === 'failed') {
           aiSummaryStatus.value = 'failed'
@@ -354,11 +392,16 @@ function stopSummaryPolling() {
 
 async function loadChapters() {
   if (!book.value) return
-  if (book.value.chapter_count === 0) return
+  if (book.value.chapter_count === 0) {
+    // 无章节也写缓存（避免下次进入重复判断/请求）
+    booksStore.cacheDetail(book.value.id, book.value, [])
+    return
+  }
   try {
     const { data } = await getChapters(book.value.id)
     if (data.success && data.data) {
       chapters.value = data.data
+      booksStore.cacheDetail(book.value.id, book.value, data.data)
     }
   } catch {
     // 章节加载失败不阻塞详情展示
@@ -377,48 +420,45 @@ function stopCrawlPolling() {
   }
 }
 
+/** 抓取结束后重新拉取完整书籍信息并同步书架列表（done/failed 共用） */
+async function refreshBook(current: Book) {
+  try {
+    const updated = await booksStore.fetchBookDetail(current.id, true)
+    if (updated && book.value) {
+      book.value = updated
+      // v2.3：同步回书架列表（章节数/epub 状态变更）
+      booksStore.upsertShelfBook(updated)
+    }
+  } catch { /* 刷新失败不阻塞 */ }
+}
+
 function startCrawlPolling(bookId: string) {
   crawlProgressVisible.value = true
   stopCrawlPolling()
   crawlTimer = setInterval(async () => {
     try {
       const status = await booksStore.fetchCrawlStatus(bookId)
-      if (status) {
-        crawlText.value = `${status.chapter_count}/${status.total_chapters ?? '?'} 章`
-        crawlPercent.value = Math.round(status.percentage)
-        // 缓存当前书籍引用：异步回调中 book.value 的窄化会失效（TS18047）
-        const current = book.value
-        if (current) {
-          current.status = status.status
-          current.chapter_count = status.chapter_count
-        }
-        if (status.status === 'done' || status.status === 'failed') {
-          stopCrawlPolling()
-          if (!current) return
-          if (status.status === 'done') {
-            // 重新获取完整的书籍信息（包含 epub/txt 状态和章节数据）
-            try {
-              const updated = await booksStore.fetchBookDetail(current.id)
-              if (updated && book.value) {
-                book.value = updated
-              }
-            } catch { /* 刷新失败不阻塞 */ }
-            // 刷新章节列表
-            loadChapters()
-            crawlProgressVisible.value = false
-            ElMessage.success('抓取完成！.epub 和 .txt 文件已生成')
-          } else {
-            // 抓取失败：重新获取书籍信息以恢复正确状态
-            try {
-              const updated = await booksStore.fetchBookDetail(current.id)
-              if (updated && book.value) {
-                book.value = updated
-              }
-            } catch { /* 刷新失败不阻塞 */ }
-            const errMsg = status.error || '抓取失败，请检查网络后重试'
-            ElMessage.error(errMsg)
-          }
-        }
+      if (!status) return
+      crawlText.value = `${status.chapter_count}/${status.total_chapters ?? '?'} 章`
+      crawlPercent.value = Math.round(status.percentage)
+      // 缓存当前书籍引用：异步回调中 book.value 的窄化会失效（TS18047）
+      const current = book.value
+      if (current) {
+        current.status = status.status
+        current.chapter_count = status.chapter_count
+      }
+      if (status.status !== 'done' && status.status !== 'failed') return
+      stopCrawlPolling()
+      if (!current) return
+      await refreshBook(current)
+      if (status.status === 'done') {
+        // 刷新章节列表（内部同步详情缓存）
+        await loadChapters()
+        crawlProgressVisible.value = false
+        ElMessage.success('抓取完成！.epub 和 .txt 文件已生成')
+      } else {
+        // 抓取失败：refreshBook 已恢复正确状态，仅提示错误
+        ElMessage.error(status.error || '抓取失败，请检查网络后重试')
       }
     } catch {
       // 轮询失败不中断
@@ -431,9 +471,7 @@ async function handleCrawl() {
   crawling.value = true
   try {
     const result = await booksStore.startCrawl(book.value.id)
-    if (book.value) {
-      book.value.status = result.status
-    }
+    book.value.status = result.status
     crawlProgressVisible.value = true
     crawlText.value = `0/? 章`
     crawlPercent.value = 0
@@ -452,6 +490,10 @@ async function toggleMark() {
     const { data } = await toggleMarkBook(book.value.id)
     if (data.success && data.data) {
       book.value = data.data
+      // v2.3：同步回书架列表并重排（标记置顶），同时更新详情缓存
+      booksStore.upsertShelfBook(data.data)
+      booksStore.resortLists()
+      booksStore.cacheDetail(data.data.id, data.data, chapters.value)
       ElMessage.success(data.data.is_marked ? '已标记' : '已取消标记')
     }
   } catch (err: any) {
@@ -479,32 +521,9 @@ function openReader(chapterIndex: number) {
   router.push(`/reader/${book.value.id}/${chapterIndex}`)
 }
 
-async function handleDownload(format: 'epub' | 'txt') {
+function handleDownload(format: 'epub' | 'txt') {
   if (!book.value) return
-  try {
-    const token = localStorage.getItem('access_token')
-    if (!token) return
-    const url = getDownloadUrl(book.value.id, format)
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` }
-    })
-    if (!response.ok) {
-      const err = await response.json()
-      throw new Error(err.error || '下载失败')
-    }
-    const blob = await response.blob()
-    const downloadUrl = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = downloadUrl
-    a.download = `${book.value.title}-${book.value.author}.${format}`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(downloadUrl)
-    ElMessage.success(`《${book.value.title}》开始下载`)
-  } catch (err: any) {
-    ElMessage.error(err.message || '下载失败')
-  }
+  downloadEbook(book.value.id, format, `${book.value.title}-${book.value.author}`, `《${book.value.title}》开始下载`)
 }
 </script>
 
@@ -517,6 +536,8 @@ async function handleDownload(format: 'epub' | 'txt') {
 }
 
 .lead { font-size: 15px; color: var(--muted); max-width: 52ch; }
+
+.detail-info { flex: 1; }
 
 .num {
   font-family: var(--font-mono);

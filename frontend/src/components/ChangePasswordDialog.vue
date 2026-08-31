@@ -7,6 +7,7 @@
     v-model="visible"
     title="修改个人密码"
     width="min(440px, calc(100vw - 32px))"
+    append-to-body
     :close-on-click-modal="false"
     destroy-on-close
   >
@@ -70,6 +71,7 @@ import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useAuthStore } from '@/stores'
+import { passwordComplexityValidator } from '@/utils'
 
 const visible = defineModel<boolean>({ required: true })
 
@@ -85,19 +87,6 @@ const form = reactive({
   confirm_password: ''
 })
 
-/** 密码复杂校验：8-64 位且同时包含字母和数字 */
-const validateNewPassword = (_rule: any, value: string, callback: Function) => {
-  if (value.length < 8 || value.length > 64) {
-    callback(new Error('密码长度需为 8-64 位'))
-  } else if (!/[a-zA-Z]/.test(value)) {
-    callback(new Error('密码需包含至少一个字母'))
-  } else if (!/[0-9]/.test(value)) {
-    callback(new Error('密码需包含至少一个数字'))
-  } else {
-    callback()
-  }
-}
-
 const validateConfirm = (_rule: any, value: string, callback: Function) => {
   if (value !== form.new_password) {
     callback(new Error('两次输入的密码不一致'))
@@ -112,7 +101,7 @@ const rules: FormRules = {
   ],
   new_password: [
     { required: true, message: '请输入新密码', trigger: 'blur' },
-    { validator: validateNewPassword, trigger: 'blur' }
+    { validator: passwordComplexityValidator, trigger: 'blur' }
   ],
   confirm_password: [
     { required: true, message: '请再次输入新密码', trigger: 'blur' },

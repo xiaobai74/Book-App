@@ -9,4 +9,4 @@
  * （推荐 HTTPS + 域名），打包 APK 前把此常量改为实际地址。
  * 格式示例：'https://api.example.com'（结尾不带斜杠）
  */
-export const MOBILE_API_BASE = 'http://47.120.32.118'
+export const MOBILE_API_BASE = 'http://47.120.49.238'

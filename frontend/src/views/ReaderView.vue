@@ -131,6 +131,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getChapterContent, getChapters, updateReadingProgress, getReadingProgress } from '@/api/books'
 import { recordRecentBook } from '@/utils/recentBooks'
+import { escapeHtml } from '@/utils'
 import type { ChapterSummary, ChapterDetail } from '@/types'
 
 const route = useRoute()
@@ -149,21 +150,19 @@ const errorMsg = ref<string | null>(null)
 const FONT_SIZES = ['small', 'medium', 'large'] as const
 type FontSize = typeof FONT_SIZES[number]
 
-const isNightMode = ref(localStorage.getItem('reader_nightMode') === 'true')
-const fontSize = ref<FontSize>(
-  (FONT_SIZES as readonly string[]).includes(localStorage.getItem('reader_fontSize') ?? '')
-    ? (localStorage.getItem('reader_fontSize') as FontSize)
-    : 'medium'
-)
-
 // ── 行间距设置（独立调节，与字号解耦） ─────────────
 const LINE_HEIGHTS = ['compact', 'normal', 'relaxed'] as const
 type LineHeightOption = typeof LINE_HEIGHTS[number]
-const lineHeightOption = ref<LineHeightOption>(
-  (LINE_HEIGHTS as readonly string[]).includes(localStorage.getItem('reader_lineHeight') ?? '')
-    ? (localStorage.getItem('reader_lineHeight') as LineHeightOption)
-    : 'normal'
-)
+
+/** 从 localStorage 读取枚举型阅读设置，非法/缺失时回退默认值 */
+function readStoredOption<T extends string>(key: string, options: readonly T[], fallback: T): T {
+  const v = localStorage.getItem(key)
+  return (options as readonly string[]).includes(v ?? '') ? (v as T) : fallback
+}
+
+const isNightMode = ref(localStorage.getItem('reader_nightMode') === 'true')
+const fontSize = ref<FontSize>(readStoredOption('reader_fontSize', FONT_SIZES, 'medium'))
+const lineHeightOption = ref<LineHeightOption>(readStoredOption('reader_lineHeight', LINE_HEIGHTS, 'normal'))
 
 const fontSizeMap: Record<FontSize, number> = { small: 14, medium: 16, large: 20 }
 const fontSizePx = computed(() => fontSizeMap[fontSize.value])
@@ -234,14 +233,6 @@ const renderedContent = computed(() => {
     .join('')
 })
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
 // 请求序号：快速翻章时丢弃过期响应，防止旧章节内容覆盖新章节
 let fetchSeq = 0
 
@@ -273,16 +264,19 @@ async function fetchChapter() {
 }
 
 function prevChapter() {
-  if (currentIndex.value <= 1) return
-  currentIndex.value--
-  router.replace(`/reader/${bookId.value}/${currentIndex.value}`)
-  fetchChapter()
+  stepChapter(-1)
 }
 
 function nextChapter() {
-  if (currentIndex.value >= totalChapters.value) return
-  currentIndex.value++
-  router.replace(`/reader/${bookId.value}/${currentIndex.value}`)
+  stepChapter(1)
+}
+
+/** 按偏移量翻章（越界时不处理），同步路由并重新拉取章节 */
+function stepChapter(delta: number) {
+  const next = currentIndex.value + delta
+  if (next < 1 || next > totalChapters.value) return
+  currentIndex.value = next
+  router.replace(`/reader/${bookId.value}/${next}`)
   fetchChapter()
 }
 
