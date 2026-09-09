@@ -2,7 +2,7 @@
    小说管理App · 书架 & 搜索 API
    ═══════════════════════════════════════════════════════ */
 import http, { API_BASE_URL } from './http'
-import type { ApiResponse, Book, BookDetail, ChapterSummary, ChapterDetail, ReadingProgress, AddBookRequest, CrawlStatus, SearchParams, SearchResultItem, SourceItem, CrawlSource, CrawlSourceFormData, CrawlSourceTestRequest, CrawlSourceTestResult, AiSearchResult } from '@/types'
+import type { ApiResponse, Book, BookDetail, ChapterSummary, ChapterDetail, ReadingProgress, AddBookRequest, CrawlStatus, CrawlStreamEvent, SearchParams, SearchResultItem, SourceItem, CrawlSource, CrawlSourceFormData, CrawlSourceTestRequest, CrawlSourceTestResult, AiSearchResult } from '@/types'
 
 /** 获取书架列表 */
 export function getBooks(page = 1, page_size = 20, marked?: boolean | null) {
@@ -74,6 +74,65 @@ export function triggerCrawl(bookId: string) {
 /** 查询抓取进度 */
 export function getCrawlStatus(bookId: string) {
   return http.get<ApiResponse<CrawlStatus>>(`/books/${bookId}/crawl-status`)
+}
+
+/** 订阅抓取实时推送（SSE，边爬边看 v1.4）
+ *
+ * 使用 fetch + ReadableStream 消费 text/event-stream（EventSource
+ * 不支持自定义 Authorization 头）。连接/解析失败时推送
+ * type='stream_error' 事件，由调用方回退到轮询。
+ *
+ * @returns 取消订阅函数
+ */
+export function subscribeCrawlStream(
+  bookId: string,
+  onEvent: (e: CrawlStreamEvent) => void,
+): () => void {
+  const controller = new AbortController()
+  let closed = false
+
+  ;(async () => {
+    try {
+      const token = localStorage.getItem('access_token')
+      const resp = await fetch(`${API_BASE_URL}/books/${bookId}/crawl-stream`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: controller.signal,
+      })
+      if (!resp.ok || !resp.body) {
+        throw new Error(`SSE 连接失败: HTTP ${resp.status}`)
+      }
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        // 按行切分，末尾不完整行留待下一块
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data:')) continue  // 忽略心跳注释行
+          try {
+            onEvent(JSON.parse(trimmed.slice(5).trim()) as CrawlStreamEvent)
+          } catch {
+            // 忽略单条畸形数据
+          }
+        }
+      }
+    } catch (err) {
+      // 主动取消不报错；其余异常通知调用方回退轮询
+      if (!closed && (err as Error)?.name !== 'AbortError') {
+        onEvent({ type: 'stream_error' })
+      }
+    }
+  })()
+
+  return () => {
+    closed = true
+    controller.abort()
+  }
 }
 
 /** 下载 EPUB/TXT（返回直接下载链接）

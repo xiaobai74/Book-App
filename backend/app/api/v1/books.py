@@ -11,6 +11,7 @@ GET    /api/v1/sources              → 获取可用源站列表
 
 POST   /api/v1/books/{book_id}/crawl        → 触发抓取
 GET    /api/v1/books/{book_id}/crawl-status → 查询抓取进度
+GET    /api/v1/books/{book_id}/crawl-stream → 抓取进度实时推送（SSE，边爬边看 v1.4）
 GET    /api/v1/books/{book_id}/download     → 下载 .epub/.txt
 POST   /api/v1/crawl/check-url              → 检查 URL 连通性
 
@@ -29,13 +30,15 @@ DELETE /api/v1/crawl-sources/{id}           → 删除自定义源站
 POST   /api/v1/crawl-sources/test           → 测试自定义规则
 """
 
+import asyncio
 import ipaddress
+import json
 import os
 from math import ceil
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +69,11 @@ from app.services.book_service import (
     chapter_to_response,
 )
 from app.services.crawl_source_service import CrawlSourceService
+from app.services.crawl_manager import (
+    get_crawl_progress,
+    subscribe_crawl,
+    unsubscribe_crawl,
+)
 from app.services.crawler_service import crawler
 from app.services.search_service import search_service
 from app.utils.deps import get_current_user
@@ -373,6 +381,85 @@ async def get_crawl_status(
     """查询指定小说的实时抓取进度"""
     status = await BookService.get_crawl_status(db, current_user, book_id)
     return ApiResponse.ok(data=status)
+
+
+@router.get(
+    "/books/{book_id}/crawl-stream",
+    summary="抓取进度实时推送（SSE）",
+)
+async def crawl_stream(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    以 Server-Sent Events 实时推送抓取事件（边爬边看 v1.4）。
+
+    事件类型：
+    - snapshot:      订阅时的当前状态快照（含目录计划 plan）
+    - plan:          章节列表就绪（完整目录标题）
+    - chapter_ready: 单章抓取完成并已写库（可立即阅读）
+    - done:          全部章节完成
+    - failed:        抓取失败
+
+    无活跃抓取任务时返回 status=none 的 snapshot 后关闭流。
+    前端使用 fetch + ReadableStream 消费（携带 Authorization 头）。
+    """
+    # 所有权校验：非本人书籍返回 404
+    await BookService.get_book_detail(db, current_user, book_id)
+
+    async def event_generator():
+        q = subscribe_crawl(book_id)
+        try:
+            progress = get_crawl_progress(book_id)
+            if progress is None:
+                # 无活跃任务：发送空快照后结束（前端回退到常规加载/轮询）
+                yield "data: " + json.dumps({
+                    "type": "snapshot", "status": "none",
+                    "current": 0, "total": 0, "percentage": 0.0, "plan": [],
+                }, ensure_ascii=False) + "\n\n"
+                return
+
+            total = progress.get("total") or 0
+            current = progress.get("current") or 0
+            yield "data: " + json.dumps({
+                "type": "snapshot",
+                "status": progress.get("status"),
+                "current": current,
+                "total": total,
+                "percentage": round(current / total * 100, 1) if total else 0.0,
+                "plan": progress.get("plan", []),
+                "error": progress.get("error"),
+            }, ensure_ascii=False) + "\n\n"
+
+            if progress.get("status") in ("done", "failed"):
+                return
+
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    # 心跳保活，防止代理/浏览器空闲断连
+                    yield ": ping\n\n"
+                    continue
+                yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+                if event.get("type") in ("done", "failed"):
+                    break
+        except asyncio.CancelledError:
+            # 客户端断开连接
+            raise
+        finally:
+            unsubscribe_crawl(book_id, q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲，保证事件即时下发
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.get(

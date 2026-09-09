@@ -1,5 +1,7 @@
 <!-- ═══════════════════════════════════════════════════════════════
      小说管理App · 在线阅读器页面 (v1.2 新增)
+     v1.6 — 边爬边看：抓取中可进入阅读；未就绪章节显示等待态，
+           章节就绪后 SSE 自动加载；目录合并展示待抓取章节
      ═══════════════════════════════════════════════════════════════ -->
 <template>
   <div class="reader-root" :class="{ 'night-mode': isNightMode }">
@@ -13,7 +15,9 @@
       </div>
       <div class="reader-header-center">
         <span class="chapter-label">第 {{ currentIndex }} 章</span>
-        <span class="chapter-title-text">{{ chapter?.title || '加载中…' }}</span>
+        <span class="chapter-title-text">{{ headerTitle }}</span>
+        <!-- 边爬边看 v1.4：抓取中实时进度徽标 -->
+        <span v-if="crawling" class="crawl-badge">抓取中 {{ crawlCurrent }}/{{ crawlTotal || '?' }}</span>
       </div>
       <div class="reader-header-right">
         <el-button text @click="toggleToc">目录</el-button>
@@ -51,6 +55,14 @@
         <p style="margin-top:12px;color:var(--muted)">加载章节内容…</p>
       </div>
 
+      <!-- 边爬边看 v1.4：章节尚未抓取完成，等待自动加载 -->
+      <div v-else-if="waitingForCrawl" class="reader-error">
+        <div class="loading-bar"></div>
+        <p style="margin-top:12px;color:var(--muted)">第 {{ currentIndex }} 章正在抓取中，就绪后自动加载…</p>
+        <p style="font-size:12px;color:var(--muted);margin-top:4px">抓取进度：{{ crawlCurrent }} / {{ crawlTotal || '?' }}</p>
+        <el-button style="margin-top:16px" @click="backToLatest">返回最新可用章节</el-button>
+      </div>
+
       <div v-else-if="errorMsg" class="reader-error">
         <p>{{ errorMsg }}</p>
         <el-button type="primary" style="margin-top:16px" @click="fetchChapter">重试</el-button>
@@ -73,7 +85,7 @@
         class="tap-zone tap-zone-next"
         type="button"
         :aria-label="nextAriaLabel"
-        :disabled="currentIndex >= totalChapters"
+        :disabled="currentIndex >= effectiveTotal"
         @click="nextChapter"
       ></button>
     </main>
@@ -87,10 +99,10 @@
         ← 上一章
       </el-button>
       <span class="reader-progress">
-        {{ currentIndex }} / {{ totalChapters || '?' }}
+        {{ currentIndex }} / {{ effectiveTotal || '?' }}
       </span>
       <el-button
-        :disabled="currentIndex >= totalChapters"
+        :disabled="currentIndex >= effectiveTotal"
         @click="nextChapter"
       >
         下一章 →
@@ -111,14 +123,15 @@
       </div>
       <div v-else class="toc-list">
         <div
-          v-for="ch in chapters"
-          :key="ch.index"
+          v-for="item in tocItems"
+          :key="item.index"
           class="toc-item"
-          :class="{ 'toc-active': ch.index === currentIndex }"
-          @click="jumpToChapter(ch.index)"
+          :class="{ 'toc-active': item.index === currentIndex, 'toc-pending': !item.available }"
+          @click="jumpToChapter(item.index)"
         >
-          <span class="toc-num">第 {{ ch.index }} 章</span>
-          <span class="toc-title">{{ ch.title }}</span>
+          <span class="toc-num">第 {{ item.index }} 章</span>
+          <span class="toc-title">{{ item.title }}</span>
+          <span v-if="!item.available" class="toc-pending-tag">抓取中</span>
         </div>
       </div>
     </el-drawer>
@@ -129,22 +142,62 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { getChapterContent, getChapters, updateReadingProgress, getReadingProgress } from '@/api/books'
+import { getChapterContent, getChapters, updateReadingProgress, getReadingProgress, getCrawlStatus, subscribeCrawlStream } from '@/api/books'
 import { recordRecentBook } from '@/utils/recentBooks'
 import { escapeHtml } from '@/utils'
-import type { ChapterSummary, ChapterDetail } from '@/types'
+import type { ChapterSummary, ChapterDetail, CrawlStreamEvent } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
 
 const bookId = computed(() => route.params.id as string)
 const currentIndex = ref(Number(route.params.chapterIndex) || 1)
-const totalChapters = ref(0)
 
 const chapter = ref<ChapterDetail | null>(null)
 const chapters = ref<ChapterSummary[]>([])
 const loading = ref(false)
 const errorMsg = ref<string | null>(null)
+
+// ── 边爬边看 v1.4：抓取态 ────────────────────────
+const crawling = ref(false)
+const crawlCurrent = ref(0)
+const crawlTotal = ref(0)
+const planTitles = ref<string[]>([])
+/** 当前章节尚未抓取完成，等待就绪事件自动加载 */
+const waitingForCrawl = ref(false)
+let stopCrawlStreamFn: (() => void) | null = null
+let crawlFallbackTimer: ReturnType<typeof setInterval> | null = null
+
+/** 总章节数：抓取中用抓取计划总数（允许翻到待抓取章节进入等待态） */
+const effectiveTotal = computed(() =>
+  crawling.value
+    ? Math.max(crawlTotal.value, chapters.value.length)
+    : chapters.value.length
+)
+
+/** 头部标题：等待态用抓取计划中的标题，避免残留上一章标题 */
+const headerTitle = computed(() => {
+  if (waitingForCrawl.value) {
+    return planTitles.value[currentIndex.value - 1] || '抓取中…'
+  }
+  return chapter.value?.title || '加载中…'
+})
+
+/** 合并目录：已就绪章节 + 抓取计划中的待抓取章节 */
+const tocItems = computed(() => {
+  const available = new Set(chapters.value.map(c => c.index))
+  const items = chapters.value
+    .slice()
+    .sort((a, b) => a.index - b.index)
+    .map(ch => ({ index: ch.index, title: ch.title, available: true }))
+  if (crawling.value) {
+    planTitles.value.forEach((title, i) => {
+      const idx = i + 1
+      if (!available.has(idx)) items.push({ index: idx, title, available: false })
+    })
+  }
+  return items
+})
 
 // ─── 阅读设置 ────────────────────────────────────
 const FONT_SIZES = ['small', 'medium', 'large'] as const
@@ -207,7 +260,6 @@ async function loadToc() {
     const { data } = await getChapters(bookId.value)
     if (data.success && data.data) {
       chapters.value = data.data
-      totalChapters.value = data.data.length
     }
   } catch {
     ElMessage.error('加载目录失败')
@@ -241,6 +293,7 @@ async function fetchChapter() {
   const index = currentIndex.value
   loading.value = true
   errorMsg.value = null
+  waitingForCrawl.value = false
   try {
     const { data } = await getChapterContent(bookId.value, index)
     if (seq !== fetchSeq) return  // 已有更新的请求，丢弃过期响应
@@ -250,12 +303,20 @@ async function fetchChapter() {
       updateReadingProgress(bookId.value, index).catch(() => {})
       // 滚动到顶部
       window.scrollTo({ top: 0, behavior: 'auto' })
+    } else if (crawling.value && index <= effectiveTotal.value) {
+      // 边爬边看：章节在抓取计划中但尚未就绪 → 等待态
+      waitingForCrawl.value = true
     } else {
       errorMsg.value = data.error || '章节加载失败'
     }
   } catch (err: any) {
     if (seq !== fetchSeq) return
-    errorMsg.value = err?.response?.data?.error || err.message || '章节加载失败'
+    if (crawling.value && index <= effectiveTotal.value) {
+      // 边爬边看：404 = 章节尚未写库，进入等待态而非报错
+      waitingForCrawl.value = true
+    } else {
+      errorMsg.value = err?.response?.data?.error || err.message || '章节加载失败'
+    }
   } finally {
     if (seq === fetchSeq) {
       loading.value = false
@@ -274,7 +335,7 @@ function nextChapter() {
 /** 按偏移量翻章（越界时不处理），同步路由并重新拉取章节 */
 function stepChapter(delta: number) {
   const next = currentIndex.value + delta
-  if (next < 1 || next > totalChapters.value) return
+  if (next < 1 || next > effectiveTotal.value) return
   currentIndex.value = next
   router.replace(`/reader/${bookId.value}/${next}`)
   fetchChapter()
@@ -285,8 +346,124 @@ const prevAriaLabel = computed(() =>
   currentIndex.value > 1 ? '上一章' : '已是第一章'
 )
 const nextAriaLabel = computed(() =>
-  currentIndex.value < totalChapters.value ? '下一章' : '已是最后一章'
+  currentIndex.value < effectiveTotal.value ? '下一章' : '已是最后一章'
 )
+
+// ── 边爬边看 v1.4：抓取事件订阅 ────────────────────
+
+/** 回到最新已就绪章节（等待态下的快捷出口） */
+function backToLatest() {
+  const latest = chapters.value.length
+    ? chapters.value[chapters.value.length - 1].index
+    : 1
+  waitingForCrawl.value = false
+  if (latest === currentIndex.value) {
+    fetchChapter()
+  } else {
+    jumpToChapter(latest)
+  }
+}
+
+function stopCrawlWatch() {
+  if (stopCrawlStreamFn) {
+    stopCrawlStreamFn()
+    stopCrawlStreamFn = null
+  }
+  if (crawlFallbackTimer) {
+    clearInterval(crawlFallbackTimer)
+    crawlFallbackTimer = null
+  }
+}
+
+function startCrawlWatch() {
+  stopCrawlWatch()
+  stopCrawlStreamFn = subscribeCrawlStream(bookId.value, (ev) => {
+    if (ev.type === 'stream_error') {
+      stopCrawlStreamFn = null
+      startCrawlFallback()
+      return
+    }
+    handleCrawlEvent(ev)
+  })
+}
+
+function handleCrawlEvent(ev: CrawlStreamEvent) {
+  switch (ev.type) {
+    case 'snapshot':
+      if (ev.status === 'none' || ev.status === 'done' || ev.status === 'failed') {
+        // 订阅时任务已结束：对齐目录并解除等待
+        crawling.value = false
+        stopCrawlWatch()
+        loadToc()
+        if (waitingForCrawl.value) fetchChapter()
+        return
+      }
+      crawling.value = true
+      crawlCurrent.value = ev.current ?? 0
+      crawlTotal.value = ev.total ?? 0
+      if (ev.plan?.length) planTitles.value = ev.plan
+      break
+    case 'plan':
+      crawlTotal.value = ev.total ?? 0
+      planTitles.value = ev.plan ?? []
+      break
+    case 'chapter_ready': {
+      crawlCurrent.value = ev.current ?? crawlCurrent.value
+      crawlTotal.value = ev.total ?? crawlTotal.value
+      // 目录实时增长（去重后按序插入）
+      if (ev.index && !chapters.value.some(c => c.index === ev.index)) {
+        chapters.value.push({
+          index: ev.index,
+          title: ev.title ?? '',
+          word_count: ev.word_count ?? 0,
+        })
+        chapters.value.sort((a, b) => a.index - b.index)
+      }
+      // 等待中的当前章节就绪 → 自动加载
+      if (waitingForCrawl.value && ev.index === currentIndex.value) {
+        fetchChapter()
+      }
+      break
+    }
+    case 'done':
+      crawling.value = false
+      stopCrawlWatch()
+      loadToc()  // 对齐最终目录
+      if (waitingForCrawl.value) fetchChapter()
+      break
+    case 'failed':
+      crawling.value = false
+      stopCrawlWatch()
+      if (waitingForCrawl.value) {
+        waitingForCrawl.value = false
+        errorMsg.value = ev.error || '抓取失败，该章节暂不可用'
+      }
+      break
+  }
+}
+
+/** SSE 断连后的轮询回退：定期确认抓取状态并重试等待中的章节 */
+function startCrawlFallback() {
+  if (crawlFallbackTimer) return
+  crawlFallbackTimer = setInterval(async () => {
+    try {
+      const { data } = await getCrawlStatus(bookId.value)
+      if (!data.success || !data.data) return
+      const st = data.data
+      if (st.status === 'crawling') {
+        crawling.value = true
+        crawlCurrent.value = st.chapter_count
+        crawlTotal.value = st.total_chapters ?? 0
+        if (waitingForCrawl.value) fetchChapter()  // 重试：就绪则加载，否则重回等待
+      } else {
+        crawling.value = false
+        stopCrawlWatch()
+        await loadToc()
+        if (waitingForCrawl.value) fetchChapter()
+      }
+    } catch { /* 静默 */ }
+  }, 4000)
+}
 
 function goBack() {
   router.push(`/detail/${bookId.value}`)
@@ -306,6 +483,17 @@ onMounted(async () => {
     await loadToc()
   } catch { /* 不影响阅读 */ }
 
+  // 边爬边看 v1.4：书籍抓取中时订阅实时推送
+  try {
+    const { data } = await getCrawlStatus(bookId.value)
+    if (data.success && data.data && data.data.status === 'crawling') {
+      crawling.value = true
+      crawlCurrent.value = data.data.chapter_count
+      crawlTotal.value = data.data.total_chapters ?? 0
+      startCrawlWatch()
+    }
+  } catch { /* 不影响阅读 */ }
+
   // 若未指定章节号，尝试恢复上次进度
   if (!route.params.chapterIndex || Number(route.params.chapterIndex) < 1) {
     try {
@@ -323,6 +511,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown)
+  stopCrawlWatch()
 })
 
 // 监听路由参数变化（浏览器前进/后退、手动修改 URL 时）。
@@ -515,6 +704,25 @@ watch(() => route.params.chapterIndex, (newVal) => {
 
 .toc-active .toc-num {
   color: rgba(255, 255, 255, 0.78);
+}
+
+/* ── 边爬边看 v1.4：待抓取章节与抓取进度徽标 ── */
+.toc-pending {
+  opacity: 0.55;
+}
+
+.toc-pending-tag {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.crawl-badge {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 .toc-title {

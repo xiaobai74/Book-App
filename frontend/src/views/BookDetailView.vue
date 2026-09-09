@@ -1,5 +1,7 @@
 <!-- ═══════════════════════════════════════════════════════════════
      小说管理App · 书籍详情页面
+     v2.4 — 边爬边看：抓取进度改用 SSE 实时推送（失败回退轮询），
+           章节目录随抓取实时增长，抓取中即可阅读已就绪章节
      v2.3 — 缓存优先加载：基础信息从书架缓存即时展示，详情/章节/
            AI 摘要按书缓存（books store），书架⇄详情⇄阅读器来回
            切换零等待零重复请求；章节与摘要改为并行加载；
@@ -113,6 +115,19 @@
                   <div class="progress-bar">
                     <div class="progress-fill" :style="{ width: crawlPercent + '%' }"></div>
                   </div>
+                  <!-- 边爬边看 v1.4：抓取中即可阅读已就绪章节 -->
+                  <p v-if="book.status === 'crawling'" style="font-size:12px;color:var(--muted);margin-top:8px">
+                    已抓取章节可立即阅读，无需等待全量完成
+                    <el-button
+                      type="primary"
+                      text
+                      size="small"
+                      :disabled="book.chapter_count === 0"
+                      @click="startReading"
+                    >
+                      立即阅读 →
+                    </el-button>
+                  </p>
                 </div>
               </div>
 
@@ -159,9 +174,12 @@
             </div>
           </div>
 
-          <!-- 章节目录 v1.2 -->
+          <!-- 章节目录 v1.2（边爬边看 v1.4：抓取中实时增长） -->
           <div v-if="chapters.length > 0" class="card">
-            <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">章节目录（{{ chapters.length }} 章）</h3>
+            <h3 style="margin-bottom:16px;font-size:18px;font-weight:600">
+              章节目录（{{ chapters.length }} 章）
+              <span v-if="book.status === 'crawling'" style="font-size:12px;color:var(--muted);font-weight:400;margin-left:8px">抓取中，目录实时更新…</span>
+            </h3>
             <div
               v-for="ch in chapters"
               :key="ch.index"
@@ -191,7 +209,8 @@ import type { Book, ChapterSummary } from '@/types'
 import TopNav from '@/components/TopNav.vue'
 import BookCover from '@/components/BookCover.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
-import { getChapters, getReadingProgress, generateAiSummary, getAiSummary, toggleMarkBook } from '@/api/books'
+import { getChapters, getReadingProgress, generateAiSummary, getAiSummary, toggleMarkBook, subscribeCrawlStream } from '@/api/books'
+import type { CrawlStreamEvent } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -208,6 +227,9 @@ const crawlPercent = ref(0)
 
 let crawlTimer: ReturnType<typeof setInterval> | null = null
 let summaryPollTimer: ReturnType<typeof setInterval> | null = null
+/** 边爬边看 v1.4：SSE 订阅取消函数与章节列表防抖重载定时器 */
+let stopCrawlStream: (() => void) | null = null
+let chapterReloadTimer: ReturnType<typeof setTimeout> | null = null
 
 // ── AI 摘要状态 v1.3 ────────────────────────────────
 const aiSummary = ref<string | null>(null)
@@ -258,7 +280,7 @@ onMounted(async () => {
 
   if (cached) {
     // 详情缓存命中：不重复请求（抓取完成/标记等变更已本地同步缓存）
-    if (cached.book.status === 'crawling') startCrawlPolling(id)
+    if (cached.book.status === 'crawling') startCrawlWatch(id)
     if (!cachedSummary) checkAiSummary(id)  // 摘要未缓存时补一次
     return
   }
@@ -269,7 +291,7 @@ onMounted(async () => {
     const result = await booksStore.fetchBookDetail(id, true)
     if (result) book.value = result
     if (result?.status === 'crawling') {
-      startCrawlPolling(id)
+      startCrawlWatch(id)
     }
     // 章节列表与 AI 摘要并行加载（原为串行三连请求）
     await Promise.all([
@@ -409,6 +431,7 @@ async function loadChapters() {
 }
 
 onUnmounted(() => {
+  stopCrawlWatch()
   stopCrawlPolling()
   stopSummaryPolling()
 })
@@ -417,6 +440,94 @@ function stopCrawlPolling() {
   if (crawlTimer) {
     clearInterval(crawlTimer)
     crawlTimer = null
+  }
+}
+
+// ── 边爬边看 v1.4：SSE 实时推送（轮询仅作回退） ────────────
+
+function stopCrawlWatch() {
+  if (stopCrawlStream) {
+    stopCrawlStream()
+    stopCrawlStream = null
+  }
+  if (chapterReloadTimer) {
+    clearTimeout(chapterReloadTimer)
+    chapterReloadTimer = null
+  }
+}
+
+/** 防抖重载章节列表：chapter_ready 高频事件下避免频繁请求 */
+function scheduleChapterReload() {
+  if (chapterReloadTimer) return
+  chapterReloadTimer = setTimeout(() => {
+    chapterReloadTimer = null
+    loadChapters()
+  }, 1500)
+}
+
+/** 订阅抓取事件流；连接失败自动回退到 v1.3 轮询 */
+function startCrawlWatch(bookId: string) {
+  crawlProgressVisible.value = true
+  stopCrawlWatch()
+  stopCrawlPolling()
+  let fellBack = false
+  stopCrawlStream = subscribeCrawlStream(bookId, (ev) => {
+    if (ev.type === 'stream_error') {
+      if (!fellBack) {
+        fellBack = true
+        stopCrawlStream = null
+        startCrawlPolling(bookId)
+      }
+      return
+    }
+    handleCrawlEvent(bookId, ev)
+  })
+}
+
+function handleCrawlEvent(bookId: string, ev: CrawlStreamEvent) {
+  // 缓存当前书籍引用：异步回调中 book.value 的窄化会失效（TS18047）
+  const current = book.value
+  switch (ev.type) {
+    case 'snapshot':
+      if (ev.status === 'none') {
+        // 订阅时任务已结束：回退轮询从 DB 确认终态
+        stopCrawlWatch()
+        startCrawlPolling(bookId)
+        return
+      }
+      if (current) current.status = 'crawling'
+      crawlText.value = `${ev.current ?? 0}/${ev.total ?? '?'} 章`
+      crawlPercent.value = Math.round(ev.percentage ?? 0)
+      break
+    case 'plan':
+      // 用事件携带的实时进度，避免拼接本地过期的 chapter_count
+      crawlText.value = `${ev.current ?? 0}/${ev.total ?? '?'} 章`
+      break
+    case 'chapter_ready':
+      if (current) {
+        current.status = 'crawling'
+        current.chapter_count = ev.current ?? current.chapter_count
+      }
+      crawlText.value = `${ev.current ?? 0}/${ev.total ?? '?'} 章`
+      crawlPercent.value = Math.round(ev.percentage ?? 0)
+      scheduleChapterReload()  // 目录实时增长
+      break
+    case 'done':
+      stopCrawlWatch()
+      stopCrawlPolling()
+      crawlProgressVisible.value = false
+      if (current) {
+        // 刷新书籍信息并重载章节列表（内部同步详情缓存与书架）
+        refreshBook(current).then(() => loadChapters())
+        ElMessage.success('抓取完成！.epub 和 .txt 文件已生成')
+      }
+      break
+    case 'failed':
+      stopCrawlWatch()
+      stopCrawlPolling()
+      if (current) refreshBook(current)
+      ElMessage.error(ev.error || '抓取失败，请检查网络后重试')
+      break
   }
 }
 
@@ -475,7 +586,7 @@ async function handleCrawl() {
     crawlProgressVisible.value = true
     crawlText.value = `0/? 章`
     crawlPercent.value = 0
-    startCrawlPolling(book.value.id)
+    startCrawlWatch(book.value.id)
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.error || err.message || '触发抓取失败')
   } finally {

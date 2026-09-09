@@ -1,10 +1,11 @@
 # 小说管理App — API 文档
 
-> **版本**：v1.3
+> **版本**：v1.4
 > **基础地址**：`http://localhost:8000`
-> **接口协议**：RESTful，请求/响应均为 JSON
+> **接口协议**：RESTful，请求/响应均为 JSON（SSE 接口除外）
 > **在线文档**：[Swagger UI](http://localhost:8000/docs) | [ReDoc](http://localhost:8000/redoc)
 > **v1.3.1**：章节排序增强（中文数字章节号 + 卷重置感知排序），见 [8.2 通用抓取规则说明](#82-通用抓取规则说明)
+> **v1.4**：边爬边看 —— 新增 SSE 实时推送接口 `GET /api/v1/books/{book_id}/crawl-stream`，章节抓取完成即增量写库可立即阅读
 
 ---
 
@@ -41,6 +42,7 @@
    - [POST /api/v1/crawl/check-url — 检查 URL 连通性](#post-apiv1crawlcheck-url--检查-url-连通性)
    - [POST /api/v1/books/{book_id}/crawl — 触发抓取](#post-apiv1booksbook_idcrawl--触发抓取)
    - [GET /api/v1/books/{book_id}/crawl-status — 查询抓取进度](#get-apiv1booksbook_idcrawl-status--查询抓取进度)
+   - [GET /api/v1/books/{book_id}/crawl-stream — 抓取进度实时推送（SSE，v1.4）](#get-apiv1booksbook_idcrawl-stream--抓取进度实时推送sse)
    - [GET /api/v1/books/{book_id}/download — 下载电子书](#get-apiv1booksbook_iddownload--下载电子书)
 6. [自定义源站接口](#6-自定义源站接口)
    - [GET /api/v1/crawl-sources — 列出自定义源站](#get-apiv1crawl-sources--列出自定义源站)
@@ -1268,6 +1270,65 @@ Authorization: Bearer <access_token>
 | `total_chapters` | `int` / `null` | 总章节数（抓取中尚未探测到时为 `null`，`done` 时等于 `chapter_count`） |
 | `error` | `string` / `null` | v1.1：失败时提供具体错误信息 |
 | `percentage` | `float` | 抓取进度百分比（0.0 - 100.0） |
+
+---
+
+### GET /api/v1/books/{book_id}/crawl-stream — 抓取进度实时推送（SSE）
+
+> 🔒 **需要认证**：`Authorization: Bearer <access_token>`
+> 🆕 **v1.4 边爬边看**：抓取过程中章节增量写库，前端无需轮询即可实时接收进度与就绪章节。
+
+以 **Server-Sent Events**（`text/event-stream`）实时推送抓取事件。每个事件为一行 `data: <JSON>`，以空行分隔；每 15s 发送心跳注释行 `: ping` 保活。
+
+**请求**
+
+```
+GET /api/v1/books/a1b2c3d4-e5f6-7890-abcd-ef1234567890/crawl-stream
+Authorization: Bearer <access_token>
+Accept: text/event-stream
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `book_id` | `string`（path） | 是 | 书籍 UUID（非本人书籍返回 404） |
+
+> ⚠️ 浏览器原生 `EventSource` 不支持自定义 Authorization 头，前端使用 `fetch` + `ReadableStream` 消费本接口。
+
+**事件类型**
+
+| 事件 `type` | 触发时机 | 携带字段 |
+|-------------|----------|----------|
+| `snapshot` | 订阅成功时的当前状态快照 | `status`（含 `none`=无活跃任务）、`current`、`total`、`percentage`、`plan`、`error` |
+| `plan` | 章节目录解析完成（抓取即将开始） | `total`、`plan`（全部章节标题数组）、`current` |
+| `chapter_ready` | 单章抓取完成并已写库（可立即阅读） | `index`、`title`、`word_count`、`current`、`total`、`percentage` |
+| `done` | 全部章节完成（随后发送后流关闭） | `total` |
+| `failed` | 抓取失败（随后发送后流关闭） | `error` |
+
+**响应示例**
+
+```
+HTTP/1.1 200 OK
+Content-Type: text/event-stream; charset=utf-8
+Cache-Control: no-cache
+X-Accel-Buffering: no
+
+data: {"type":"snapshot","status":"crawling","current":3,"total":149,"percentage":2.0,"plan":["第1章 …","第2章 …"]}
+
+data: {"type":"plan","total":149,"plan":["第1章 …","第2章 …"],"current":0}
+
+data: {"type":"chapter_ready","index":4,"title":"第4章 …","word_count":2891,"current":4,"total":149,"percentage":2.7}
+
+: ping
+
+data: {"type":"done","total":149}
+```
+
+**说明**
+
+- 无活跃抓取任务时，仅推送一条 `status=none` 的 `snapshot` 后关闭流（前端据此回退到 `crawl-status` 轮询）。
+- 任务已结束（`done`/`failed`）时，推送终态 `snapshot` 后关闭流。
+- `chapter_ready` 事件到达即表示该章已可通过 `GET /books/{book_id}/chapters/{index}` 读取正文（边爬边看核心能力）。
+- 响应头 `X-Accel-Buffering: no` 禁用 nginx 缓冲，保证事件即时下发。
 
 ---
 

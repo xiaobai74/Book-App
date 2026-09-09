@@ -62,6 +62,23 @@ export interface CrawlStatus {
   error: string | null  // 失败时的具体错误信息
 }
 
+/** 抓取实时推送事件（SSE，边爬边看 v1.4） */
+export interface CrawlStreamEvent {
+  type: 'snapshot' | 'plan' | 'chapter_ready' | 'done' | 'failed' | 'stream_error'
+  status?: BookStatus | 'none'
+  current?: number
+  total?: number
+  percentage?: number
+  /** chapter_ready：就绪章节序号 */
+  index?: number
+  /** chapter_ready / plan 中的章节标题 */
+  title?: string
+  word_count?: number
+  /** 完整目录标题计划（按章节序） */
+  plan?: string[]
+  error?: string | null
+}
+
 /** 分页元信息 */
 export interface PaginationMeta {
   page: number

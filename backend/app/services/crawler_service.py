@@ -917,6 +917,8 @@ class CrawlerService:
         progress_callback=None,
         max_chapters: int = 5000,
         rule: dict | None = None,
+        on_plan=None,
+        on_chapter=None,
     ) -> list[CrawledChapter]:
         """完整抓取一本书。
 
@@ -925,6 +927,10 @@ class CrawlerService:
             progress_callback: 进度回调 (current, total)
             max_chapters: 安全上限
             rule: 可选的源站规则，不传则自动匹配
+            on_plan: 章节列表获取后的异步回调 async fn([(title, url), ...])，
+                用于“边爬边看”提前推送目录计划
+            on_chapter: 单章完成后的异步回调 async fn(CrawledChapter)，
+                用于“边爬边看”增量写库与实时推送
 
         Returns:
             章节列表（按序号排列）
@@ -971,6 +977,10 @@ class CrawlerService:
 
         # Step 3: 并发抓取正文
         chapter_links = chapter_links[:total]
+
+        # “边爬边看”：目录计划就绪回调（前端可提前渲染完整目录）
+        if on_plan:
+            await on_plan(chapter_links)
 
         # 源站可覆盖全局并发/间隔配置
         crawl_rule = rule.get("crawl", {})
@@ -1026,7 +1036,14 @@ class CrawlerService:
                     if progress_callback:
                         progress_callback(completed_count, total)
 
-                return CrawledChapter(index=i, title=title, content=content)
+                crawled = CrawledChapter(index=i, title=title, content=content)
+
+                # “边爬边看”：单章完成即回调（增量写库 + 实时推送）。
+                # 放在锁外执行：DB 写入不阻塞其他章节的并发抓取。
+                if on_chapter:
+                    await on_chapter(crawled)
+
+                return crawled
 
         # 并发执行所有章节抓取
         tasks = [

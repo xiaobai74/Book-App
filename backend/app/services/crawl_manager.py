@@ -1,8 +1,11 @@
 """
-抓取任务管理器 v4
+抓取任务管理器 v5
 
 后台抓取流水线：连接预检 → 规则匹配 → 获取章节 → 并发抓取 → 写入 DB → 生成 EPUB。
 v4: 适配规则驱动的 CrawlerService，支持源站规则覆盖并发/间隔配置。
+v5: “边爬边看”——单章完成即增量写库 + SSE 事件总线实时推送
+    （plan / chapter_ready / done / failed），前端无需轮询即可
+    在抓取过程中阅读已就绪章节。
 """
 
 import asyncio
@@ -20,11 +23,14 @@ from app.services.txt_service import txt_service
 
 logger = logging.getLogger(__name__)
 
-# 抓取进度: {book_id: {"current": int, "total": int, "status": str, "error": str|None}}
+# 抓取进度: {book_id: {"current": int, "total": int, "status": str, "error": str|None, "plan": list[str]}}
 _crawl_progress: dict[str, dict] = {}
 
 # 全局任务引用: {book_id: asyncio.Task}
 _running_tasks: dict[str, asyncio.Task] = {}
+
+# SSE 订阅者: {book_id: [asyncio.Queue, ...]}
+_subscribers: dict[str, list[asyncio.Queue]] = {}
 
 # EPUB 在线程池中生成
 _thread_pool = ThreadPoolExecutor(max_workers=2)
@@ -34,6 +40,41 @@ _DEFAULT_MAX_CHAPTERS = 5000
 
 def get_crawl_progress(book_id: str) -> dict | None:
     return _crawl_progress.get(book_id)
+
+
+# ═══════════════════════════════════════════════════════
+# SSE 事件总线（“边爬边看”实时推送）
+# ═══════════════════════════════════════════════════════
+
+def subscribe_crawl(book_id: str) -> asyncio.Queue:
+    """订阅某本书的抓取事件流，返回接收事件的队列。"""
+    q: asyncio.Queue = asyncio.Queue(maxsize=512)
+    _subscribers.setdefault(book_id, []).append(q)
+    return q
+
+
+def unsubscribe_crawl(book_id: str, q: asyncio.Queue) -> None:
+    """取消订阅，清理空订阅列表。"""
+    subs = _subscribers.get(book_id)
+    if not subs:
+        return
+    if q in subs:
+        subs.remove(q)
+    if not subs:
+        _subscribers.pop(book_id, None)
+
+
+def _publish(book_id: str, event: dict) -> None:
+    """向所有订阅者推送事件；消费过慢的订阅者丢弃最旧事件保最新。"""
+    for q in list(_subscribers.get(book_id, [])):
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            try:
+                q.get_nowait()
+                q.put_nowait(event)
+            except Exception:
+                pass
 
 
 def _cleanup_task(book_id: str, task: asyncio.Task) -> None:
@@ -65,9 +106,9 @@ async def start_crawl(book_id: str, max_chapters: int = _DEFAULT_MAX_CHAPTERS) -
 
 
 async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
-    """完整的异步抓取流水线。"""
+    """完整的异步抓取流水线（v5：增量写库 + SSE 实时推送）。"""
     _crawl_progress[book_id] = {
-        "current": 0, "total": 0, "status": "crawling", "error": None,
+        "current": 0, "total": 0, "status": "crawling", "error": None, "plan": [],
     }
 
     # ══ 1. 从 DB 读取书籍信息（排除已软删除的书籍） ══
@@ -80,16 +121,18 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
         if not book:
             _crawl_progress[book_id] = {
                 "current": 0, "total": 0, "status": "failed",
-                "error": "书籍不存在或已被删除",
+                "error": "书籍不存在或已被删除", "plan": [],
             }
+            _publish(book_id, {"type": "failed", "error": "书籍不存在或已被删除"})
             logger.error(f"书籍 {book_id} 不存在或已被删除")
             return
 
         if not book.source_url:
             _crawl_progress[book_id] = {
                 "current": 0, "total": 0, "status": "failed",
-                "error": "缺少 source_url，无法抓取",
+                "error": "缺少 source_url，无法抓取", "plan": [],
             }
+            _publish(book_id, {"type": "failed", "error": "缺少 source_url，无法抓取"})
             book.status = "failed"
             await db.commit()
             return
@@ -102,26 +145,91 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
     book_title = book.title
     book_author = book.author
 
-    # ── 进度回调辅助 ──────────────────────────────
-    def update_progress(current: int, total: int):
-        _crawl_progress[book_id] = {
-            "current": current, "total": total, "status": "crawling", "error": None,
-        }
+    # ── “边爬边看”回调：目录计划 / 单章增量写库 ────────────
+    write_lock = asyncio.Lock()
+    write_state = {"started": False, "written": 0, "aborted": False}
 
-    # ══ 2. 爬取所有章节 ══
+    async def _on_plan(links: list[tuple[str, str]]) -> None:
+        """章节列表就绪：记录目录计划并推送，前端可提前渲染完整目录。"""
+        titles = [title for title, _ in links]
+        prog = _crawl_progress.get(book_id)
+        if prog is None:
+            return
+        prog["plan"] = titles
+        prog["total"] = len(titles)
+        _publish(book_id, {
+            "type": "plan", "total": len(titles), "plan": titles,
+            "current": prog["current"],  # 携带当前进度，避免前端拼接过期的 chapter_count
+        })
+        logger.info(f"《{book_title}》目录计划就绪: {len(titles)} 章")
+
+    async def _on_chapter(ch) -> None:
+        """单章抓取完成：立即写库 + 更新进度 + 推送 chapter_ready 事件。"""
+        prog = _crawl_progress.get(book_id)
+        if prog is None or write_state["aborted"]:
+            return
+        async with write_lock:
+            if write_state["aborted"]:
+                return
+            async with async_session() as db:
+                result = await db.execute(
+                    select(Book).where(Book.id == book_id, Book.deleted_at.is_(None))
+                )
+                book_obj = result.scalar_one_or_none()
+                if not book_obj:
+                    # 书籍已被删除：停止写库，流水线结束后自行退出
+                    write_state["aborted"] = True
+                    logger.warning(f"书籍 {book_id} 已被删除，停止增量写库")
+                    return
+
+                if not write_state["started"]:
+                    # 首批新章节写库前清除旧章节：
+                    # 保证新内容可用前旧章节仍可阅读（延迟到最后一刻）
+                    await db.execute(delete(Chapter).where(Chapter.book_id == book_id))
+                    book_obj.chapter_count = 0
+                    write_state["started"] = True
+
+                db.add(Chapter(
+                    book_id=book_id,
+                    index=ch.index,
+                    title=ch.title,
+                    content=ch.content,
+                    word_count=len(ch.content),
+                ))
+                book_obj.chapter_count = (book_obj.chapter_count or 0) + 1
+                await db.commit()
+
+            write_state["written"] += 1
+            cur = write_state["written"]
+            total = prog["total"] or 0
+            prog["current"] = cur
+            pct = round(cur / total * 100, 1) if total else 0.0
+            _publish(book_id, {
+                "type": "chapter_ready",
+                "index": ch.index,
+                "title": ch.title,
+                "word_count": len(ch.content),
+                "current": cur,
+                "total": total,
+                "percentage": pct,
+            })
+
+    # ══ 2. 爬取所有章节（单章完成即增量写库） ══
     logger.info(f"开始抓取《{book_title}》: {source_url}")
     try:
         chapters = await crawler.crawl_book(
             source_url=source_url,
-            progress_callback=update_progress,
             max_chapters=max_chapters,
+            on_plan=_on_plan,
+            on_chapter=_on_chapter,
         )
     except Exception as e:
         error_msg = str(e)
         logger.error(f"抓取失败: {error_msg}")
         _crawl_progress[book_id] = {
-            "current": 0, "total": 0, "status": "failed", "error": error_msg,
+            "current": 0, "total": 0, "status": "failed", "error": error_msg, "plan": [],
         }
+        _publish(book_id, {"type": "failed", "error": error_msg})
         async with async_session() as db:
             result = await db.execute(
                 select(Book).where(Book.id == book_id, Book.deleted_at.is_(None))
@@ -130,13 +238,18 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
             if book:
                 book.status = "failed"
                 await db.commit()
+        return
+
+    if write_state["aborted"]:
+        logger.warning(f"书籍 {book_id} 已删除，抓取流水线提前退出")
         return
 
     if not chapters:
         _crawl_progress[book_id] = {
             "current": 0, "total": 0, "status": "failed",
-            "error": "未获取到任何章节内容",
+            "error": "未获取到任何章节内容", "plan": [],
         }
+        _publish(book_id, {"type": "failed", "error": "未获取到任何章节内容"})
         async with async_session() as db:
             result = await db.execute(
                 select(Book).where(Book.id == book_id, Book.deleted_at.is_(None))
@@ -147,37 +260,15 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
                 await db.commit()
         return
 
-    # ══ 3. 写入章节到 DB（新 session） ══
-    logger.info(f"写入 {len(chapters)} 章到数据库…")
-    book_title = ""
-    book_author = ""
+    # ══ 3. 收尾：章节已增量写库，此处仅确认状态与章节数 ══
     async with async_session() as db:
-        # 排除已软删除的书籍：避免删除后章节仍被写回、状态被覆盖为 done
         result = await db.execute(
             select(Book).where(Book.id == book_id, Book.deleted_at.is_(None))
         )
         book = result.scalar_one_or_none()
         if not book:
-            logger.warning(f"书籍 {book_id} 已被删除，跳过章节写入与文件生成")
+            logger.warning(f"书籍 {book_id} 已被删除，跳过文件生成")
             return
-
-        book_title = book.title
-        book_author = book.author
-
-        # 清除旧章节（在这里删除 — 确保新内容已抓取成功）
-        await db.execute(delete(Chapter).where(Chapter.book_id == book_id))
-
-        for i, ch in enumerate(chapters):
-            db.add(Chapter(
-                book_id=book_id,
-                index=ch.index,
-                title=ch.title,
-                content=ch.content,
-                word_count=len(ch.content),
-            ))
-            if (i + 1) % 50 == 0:
-                await db.flush()
-
         book.chapter_count = len(chapters)
         book.status = "done"
         await db.commit()
@@ -189,7 +280,9 @@ async def _crawl_pipeline(book_id: str, max_chapters: int) -> None:
         "total": len(chapters),
         "status": "done",
         "error": None,
+        "plan": _crawl_progress.get(book_id, {}).get("plan", []),
     }
+    _publish(book_id, {"type": "done", "total": len(chapters)})
     logger.info(f"《{book_title}》章节写入完成: {len(chapters)} 章，开始生成电子书文件…")
 
     # ══ 4. 生成 EPUB 和 TXT ══

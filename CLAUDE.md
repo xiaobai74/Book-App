@@ -71,7 +71,7 @@ GIT_TERMINAL_PROMPT=0 git push origin master
   - `backend/run.py` + `backend/build.spec` — PyInstaller 打包入口与配置（v2.3，产物 `backend/dist/novel-backend.exe`）
   - `backend/app/config.py` — 双数据库配置：默认 SQLite（`%AppData%/NovelManager/`），`DATABASE_URL` 可覆盖回 MySQL；导出目录也在此统一配置
   - `backend/app/models/` — ORM 模型：User、Book、Chapter、RefreshToken、CrawlSource、ReadingProgress（v1.2 新增）
-  - `backend/app/services/` — 服务层：crawler_service（规则驱动爬虫引擎 + 卷重置感知章节排序 + qsbs base64 正文解码）、search_service（外部源站搜索）、crawl_manager（后台抓取流水线）、epub_service、txt_service、book_service（含标记/阅读进度逻辑 + 双字段搜索，v1.2 扩展）、ai_service（AI 语义搜索/摘要，v1.3 新增）、crawl_source_service（自定义源站 CRUD）
+  - `backend/app/services/` — 服务层：crawler_service（规则驱动爬虫引擎 + 卷重置感知章节排序 + qsbs base64 正文解码）、search_service（外部源站搜索）、crawl_manager（后台抓取流水线 v5，边爬边看：单章完成即增量写库 + SSE 事件总线实时推送）、epub_service、txt_service、book_service（含标记/阅读进度逻辑 + 双字段搜索，v1.2 扩展）、ai_service（AI 语义搜索/摘要，v1.3 新增）、crawl_source_service（自定义源站 CRUD）
   - `backend/app/api/v1/ai.py` — AI 功能路由（v1.3 新增）：语义搜索、摘要生成
   - `frontend/src/stores/shelfSearch.ts` — 书架 AI 语义搜索共享状态（v1.9 新增，TopNav 与 SearchView 共用）
   - `backend/rules/` — 规则引擎 + main.json（11 个内置源站规则）+ custom_sources.json（用户自定义规则）；frozen 模式规则从 `_MEIPASS` 读取、自定义规则写入用户数据目录
@@ -88,7 +88,8 @@ GIT_TERMINAL_PROMPT=0 git push origin master
 - **`test/`** — 测试目录
   - `test/test plan/` — 前后端测试计划
   - `test/test report/` — 测试报告
-- **`api/API文档.md`** — API 接口完整文档（已更新至 v1.3，含标记/章节/进度/AI 接口）
+  - `test/e2e_live_crawl_test.py` — 边爬边看端到端验证（v2.6：SSE 事件/增量写库/抓取中可读，需后端运行）
+- **`api/API文档.md`** — API 接口完整文档（已更新至 v1.4，含标记/章节/进度/AI 接口与 SSE 实时推送接口 crawl-stream）
 - **`pyproject.toml`** — 项目元数据（Python ≥ 3.12，含 brotli/brotlicffi 等依赖）
 - **`.gitignore`** — 排除虚拟环境、IDE 配置、环境变量文件、构建产物（backend/dist、desktop/release、frontend/android 构建目录、*.apk、调试输出 txt）
 - **`.venv/`** — 本地虚拟环境
@@ -329,6 +330,25 @@ v2.5 水墨玻璃拟态视觉升级（web 端 + 移动端全部页面，设计�
 - **背景明暗自适应墨色**：theme store 新增 `updateBgTone()`——调色板背景按底色+深景加权亮度（WCAG 线性化）判定，图片背景缩样 16×16 canvas 异步采样平均亮度；向 `<html>` 写入 `data-bg-tone='dark'|'light'`。global.css 新增 `--onbg-title/--onbg-text/--onbg-muted` 变量组（默认=浓墨；dark 时=暖白淡墨 #f5f2e9 系），接入 `.ink-title`（含笔锋短线）、`.lead`、`.pagefoot`、`.empty-state`、九宫格 `.grid-title/.grid-author`、搜索/源站页直置提示文字、`.cache-tip`。玻璃卡片内文字不受影响（仍走 --ink/--muted）。
 - **按钮全面水墨玻璃化**：默认 `.el-button` 半透明玻璃底+白描边+墨色文字+悬浮黛蓝提亮；`.el-button--primary` 黛蓝玻璃光泽（顶部高光+底部加深+内高光）；text/link 型保持透明；筛选标签 `.el-radio-button` 玻璃分段（选中黛蓝填充+墨影）；分页器玻璃化。`.back-btn` 不变。
 - 验证：`npm run build` 6.51s 通过 + 70/70 单测通过；文档同步：PRD 版本表新增 v2.5.2 行
+
+## v2.6 变更（✅ 已完成）
+
+v2.6 边爬边看（后台异步爬取 + 实时数据推送），抓取过程中无需等待全量完成即可阅读已就绪章节：
+
+### 后端（增量写库 + SSE 事件总线）
+- `backend/app/services/crawler_service.py`：`crawl_book` 新增 `on_plan`（目录就绪）/ `on_chapter`（单章完成，锁外回调不阻塞并发抓取）回调
+- `backend/app/services/crawl_manager.py` v5：单章抓取完成立即写库（write_lock 串行；首批写入前才删旧章节并归零 chapter_count，保证新内容可用前旧章节仍可读），SSE 订阅总线（`subscribe_crawl`/`unsubscribe_crawl`/`_publish`，QueueFull 丢最旧保最新）推送 `plan`/`chapter_ready`/`done`/`failed` 事件；书籍被删时 `aborted` 状态停止写库
+- `backend/app/api/v1/books.py`：新增 `GET /books/{book_id}/crawl-stream` SSE 端点（所有权校验 404；订阅先发 `snapshot`，无活跃任务发 `status=none` 后关流；15s 心跳 `: ping`；`X-Accel-Buffering: no` 禁 nginx 缓冲）
+
+### 前端（SSE 订阅 + 阅读等待态）
+- `frontend/src/api/books.ts`：新增 `subscribeCrawlStream(bookId, onEvent)` —— `fetch` + `ReadableStream` 消费 SSE（`EventSource` 不支持 Authorization 头），异常时回调 `stream_error`，返回 abort 取消函数；`types/index.ts` 新增 `CrawlStreamEvent`
+- `BookDetailView.vue` v2.4：轮询改 SSE 订阅（`stream_error`/`snapshot none` 自动回退 2s 轮询），`chapter_ready` 防抖 1.5s 重载目录（实时增长），抓取中显示「立即阅读」入口
+- `ReaderView.vue` v1.6：抓取中可进入阅读（头部实时徽标）；`effectiveTotal` 用抓取计划总数允许翻到待抓取章节；未就绪章节（404）进入 `waitingForCrawl` 等待态而非报错，`chapter_ready` 命中当前章自动加载；目录合并已就绪章节 + 计划中待抓取章节（半透明+「抓取中」标签）；头部标题等待态显示计划标题（`headerTitle`）
+
+### 验证
+- `test/e2e_live_crawl_test.py`：真实源站（香书小说 149 章）端到端验证 10/10 通过——SSE 事件流、抓取中（5/149）章节已写库且可读、`chapter_ready` 数 == 库内章节数
+- 浏览器实测通过：进度实时自增、目录 13→149 实时增长、待抓取章节等待态+就绪自动加载
+- 文档同步：API 文档 v1.4（crawl-stream 章节）、PRD 版本表 v2.6 行
 
 
 ## 自定义约束
