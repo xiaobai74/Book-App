@@ -59,9 +59,14 @@
                     <StatusBadge :status="book.status" />
                   </div>
                   <span class="meta">章节数：<span class="num">{{ book.chapter_count }}</span></span>
+                  <span v-if="book.category" class="meta">分类：{{ book.category }}</span>
+                  <span v-if="book.latest_chapter" class="meta">最新：{{ book.latest_chapter }}</span>
+                  <span v-if="book.last_update_time" class="meta">源站更新：{{ book.last_update_time }}</span>
                 </div>
                 <div class="detail-actions">
+                  <!-- 抓取按钮仅对有源站链接的书籍显示；本地导入书（无 source_url）不可抓取 -->
                   <el-button
+                    v-if="book.source_url"
                     type="primary"
                     :disabled="book.status === 'crawling'"
                     :loading="crawling"
@@ -69,6 +74,7 @@
                   >
                     {{ book.status === 'done' ? '重新抓取' : '抓取小说内容' }}
                   </el-button>
+                  <el-tag v-else type="info" effect="plain" style="align-self:center">本地导入</el-tag>
                   <!-- v1.2: 在线阅读按钮 -->
                   <el-button
                     type="success"
@@ -131,8 +137,15 @@
                 </div>
               </div>
 
-              <BookCover :title="book.title" :author="book.author" />
+              <BookCover :title="book.title" :author="book.author" :cover-src="getCoverUrl(book.id, book.has_cover)" />
             </div>
+          </div>
+
+          <!-- 内容简介（源站抓取，v1.7） -->
+          <div v-if="book.description || book.source_url" class="card intro-card" style="margin-bottom:24px">
+            <h3 style="font-size:18px;font-weight:600;margin:0 0 12px">内容简介</h3>
+            <p v-if="book.description" class="intro-text">{{ book.description }}</p>
+            <p v-else style="font-size:13px;color:var(--muted);margin:0">暂无简介（未从源站获取到简介信息）</p>
           </div>
 
           <!-- AI 摘要区块 v1.3 -->
@@ -209,7 +222,7 @@ import type { Book, ChapterSummary } from '@/types'
 import TopNav from '@/components/TopNav.vue'
 import BookCover from '@/components/BookCover.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
-import { getChapters, getReadingProgress, generateAiSummary, getAiSummary, toggleMarkBook, subscribeCrawlStream } from '@/api/books'
+import { getChapters, getReadingProgress, generateAiSummary, getAiSummary, toggleMarkBook, subscribeCrawlStream, getCoverUrl } from '@/api/books'
 import type { CrawlStreamEvent } from '@/types'
 
 const route = useRoute()
@@ -647,6 +660,19 @@ function handleDownload(format: 'epub' | 'txt') {
 }
 
 .lead { font-size: 15px; color: var(--muted); max-width: 52ch; }
+
+/* ── 内容简介 v1.7 ─────────────────────── */
+.intro-card {
+  border-left: 3px solid var(--accent-warm);
+}
+
+.intro-text {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--fg-soft);
+  white-space: pre-wrap;
+  margin: 0;
+}
 
 .detail-info { flex: 1; }
 

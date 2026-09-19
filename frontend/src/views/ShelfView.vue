@@ -32,10 +32,19 @@
               :aria-label="viewMode === 'list' ? '切换九宫格视图' : '切换列表视图'"
               @click="toggleViewMode"
             />
-            <el-button type="primary" class="shelf-add-btn" @click="showAddDialog = true">
-              <el-icon style="margin-right:6px"><Plus /></el-icon>
-              添加小说
-            </el-button>
+            <el-dropdown trigger="click" @command="handleAddCommand">
+              <el-button type="primary" class="shelf-add-btn">
+                <el-icon style="margin-right:6px"><Plus /></el-icon>
+                添加小说
+                <el-icon style="margin-left:4px"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="online">在线添加（书名 / 源站）</el-dropdown-item>
+                  <el-dropdown-item command="import">从本地文件导入</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
         </div>
 
@@ -96,7 +105,7 @@
                 <div class="book-card-main" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
                   <div class="book-card-left" style="display:flex;align-items:flex-start;gap:16px;min-width:0">
                     <div class="shelf-cover">
-                      <BookCover :title="book.title" :author="book.author" />
+                      <BookCover :title="book.title" :author="book.author" :cover-src="getCoverUrl(book.id, book.has_cover)" />
                     </div>
                     <div class="book-card-info" style="min-width:0">
                       <div class="book-title">{{ book.title }}</div>
@@ -144,7 +153,7 @@
                 @keyup.enter="goDetail(book)"
               >
                 <div class="grid-cover">
-                  <BookCover :title="book.title" :author="book.author" />
+                  <BookCover :title="book.title" :author="book.author" :cover-src="getCoverUrl(book.id, book.has_cover)" />
                   <span v-if="book.is_marked" class="grid-star" title="已标记">★</span>
                 </div>
                 <div class="grid-title">{{ book.title }}</div>
@@ -204,23 +213,27 @@
 
     <!-- v2.3：书籍详情底部弹层（长按唤起；标记 / 删除 / 预留扩展） -->
     <BookActionSheet v-model="sheetVisible" :book-id="sheetBookId" />
+
+    <!-- 本地文件导入对话框（Web/桌面选文件，移动端扫描设备） -->
+    <ImportBookDialog v-model="showImportDialog" @imported="onImported" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Plus, Reading, Grid, List } from '@element-plus/icons-vue'
+import { Plus, Reading, Grid, List, ArrowDown } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useBooksStore } from '@/stores'
 import { formatDate } from '@/utils'
-import { checkSourceUrl } from '@/api/books'
+import { checkSourceUrl, getCoverUrl } from '@/api/books'
 import type { Book } from '@/types'
 import TopNav from '@/components/TopNav.vue'
 import BookCover from '@/components/BookCover.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import BookActionSheet from '@/components/BookActionSheet.vue'
+import ImportBookDialog from '@/components/ImportBookDialog.vue'
 
 const booksStore = useBooksStore()
 const router = useRouter()
@@ -348,6 +361,18 @@ function goRead(book: Book) {
 
 // ── 添加书籍 ────────────────────────────────────
 const showAddDialog = ref(false)
+const showImportDialog = ref(false)
+
+/** 添加小说下拉命令：在线添加 / 本地导入 */
+function handleAddCommand(cmd: string) {
+  if (cmd === 'online') showAddDialog.value = true
+  else if (cmd === 'import') showImportDialog.value = true
+}
+
+/** 本地导入成功后刷新书架 */
+function onImported() {
+  booksStore.ensureShelf(true)
+}
 const addingBook = ref(false)
 const checkingUrl = ref(false)
 const urlCheckResult = ref<{
@@ -432,7 +457,7 @@ async function handleAddBook() {
 
 <style scoped>
 .stack { display: flex; flex-direction: column; }
-.lead { font-size: 15px; color: var(--onbg-muted); }   /* v2.5.2：直置背景，自适应墨色 */
+.lead { font-size: 15px; color: var(--onbg-muted); text-shadow: var(--onbg-halo-shadow); }   /* v2.5.2：直置背景，自适应墨色；v2.6 反色光晕 */
 .num { font-family: var(--font-mono); }
 
 /* ── 筛选栏 ────────────────────────────────────────── */
@@ -495,6 +520,7 @@ async function handleAddBook() {
   font-size: 13px;
   font-weight: 600;
   color: var(--onbg-title);   /* v2.5.2：直置背景，深色背景下自动换暖白淡墨 */
+  text-shadow: var(--onbg-halo-shadow);   /* v2.6：反色光晕，任意背景下书名清晰 */
   display: -webkit-box;
   -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
@@ -504,6 +530,7 @@ async function handleAddBook() {
   margin-top: 2px;
   font-size: 11px;
   color: var(--onbg-muted);
+  text-shadow: var(--onbg-halo-shadow);   /* v2.6：反色光晕，任意背景下作者名清晰 */
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;

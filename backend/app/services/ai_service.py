@@ -251,6 +251,69 @@ class AiService:
         return results
 
     # ═══════════════════════════════════════════════════════
+    # 全网搜索 · 题材推荐
+    # ═══════════════════════════════════════════════════════
+
+    @staticmethod
+    async def recommend_books_by_genre(query: str, top_k: int = 3) -> list[dict]:
+        """根据用户描述的书籍类型，由 LLM 推荐 2-3 本相关小说（全网搜索用）。
+
+        与 semantic_search 不同：本方法不依赖书架数据，而是让 LLM 从
+        自身知识中推荐该题材下的知名作品，用户选中后再执行全网源站搜索。
+
+        Dify 未配置 / 调用失败 / 无推荐时统一返回 []，由前端回退为直接全网搜索。
+
+        Returns:
+            [{"title": str, "author": str, "reason": str}, ...]
+        """
+        if not settings.dify_api_url or not settings.dify_recommend_api_key:
+            logger.warning("Dify 推荐工作流未配置，返回空推荐（前端将回退为直接全网搜索）")
+            return []
+
+        try:
+            async with httpx.AsyncClient(timeout=_DIFY_TIMEOUT) as client:
+                resp = await client.post(
+                    f"{settings.dify_api_url}/chat-messages",
+                    headers={
+                        "Authorization": f"Bearer {settings.dify_recommend_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "query": query,
+                        "user": "web-recommend",
+                        "response_mode": "blocking",
+                        "inputs": {"query": query},
+                    },
+                )
+                resp.raise_for_status()
+                body = resp.json()
+
+            answer = body.get("answer", "[]")
+            answer = _strip_markdown_fence(answer)
+            results = _safe_parse_json_array(answer, fallback=[])
+
+            normalized: list[dict] = []
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                title = str(r.get("title") or "").strip()
+                if not title:
+                    continue
+                normalized.append({
+                    "title": title,
+                    "author": str(r.get("author") or "未知").strip() or "未知",
+                    "reason": str(r.get("reason") or "").strip(),
+                })
+            return normalized[:top_k]
+
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            logger.warning("Dify 推荐请求网络错误: %s，返回空推荐", e)
+            return []
+        except Exception as e:
+            logger.exception("Dify 推荐请求异常: %s，返回空推荐", e)
+            return []
+
+    # ═══════════════════════════════════════════════════════
     # 智能阅读摘要生成
     # ═══════════════════════════════════════════════════════
 

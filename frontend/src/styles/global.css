@@ -145,6 +145,8 @@ h1, h2, h3, h4 { margin: 0; font-family: var(--font-heading); letter-spacing: 0.
    颜色走 --onbg-title，深色背景下自动切换暖白淡墨 */
 .ink-title {
   color: var(--onbg-title);
+  /* v2.6：反色光晕描边，任意背景下保证标题清晰（见 --onbg-halo-shadow） */
+  text-shadow: var(--onbg-halo-shadow);
 }
 .ink-title::after {
   content: '';
@@ -192,11 +194,26 @@ h1, h2, h3, h4 { margin: 0; font-family: var(--font-heading); letter-spacing: 0.
   --onbg-title: var(--ink);
   --onbg-text: var(--ink-soft);
   --onbg-muted: var(--muted);
+  /* v2.6 背景文字恒定对比：与字形反色的光晕色（浅晕配浓墨字）。
+     光晕自带局部对比环，中调/花哨背景或明暗检测误差下仍可读 */
+  --onbg-halo: rgba(255, 255, 255, 0.92);
+  /* 1px 四向描边 + 6px 柔光，构成贴合字形的反色轮廓 */
+  --onbg-halo-shadow: 0 1px 0 var(--onbg-halo), 1px 0 0 var(--onbg-halo),
+    -1px 0 0 var(--onbg-halo), 0 -1px 0 var(--onbg-halo), 0 0 6px var(--onbg-halo);
 }
 html[data-bg-tone='dark'] {
   --onbg-title: #f5f2e9;
   --onbg-text: #e9e5d9;
   --onbg-muted: #c9c4b4;
+  /* 深色基调下字形为暖白，光晕反色为深墨（内层 var 在使用处解析，自动跟随） */
+  --onbg-halo: rgba(16, 19, 27, 0.92);
+}
+
+/* v2.6 直置背景的小号说明文字工具类（搜索页提示等）：
+   自适应墨色 + 反色光晕，任意背景下清晰 */
+.onbg-note {
+  color: var(--onbg-muted);
+  text-shadow: var(--onbg-halo-shadow);
 }
 
 /* ─── 键盘焦点可见性（WCAG 2.4.7 / 2.4.11） ────────────
@@ -788,6 +805,8 @@ html[data-bg-tone='dark'] {
   text-align: center;
   padding: 64px 32px;   /* v2.5.2：直置背景上，颜色走自适应墨色变量 */
   color: var(--onbg-text);
+  /* v2.6：反色光晕描边，任意背景下空状态文案清晰 */
+  text-shadow: var(--onbg-halo-shadow);
 }
 
 .empty-state .empty-icon {
@@ -835,6 +854,8 @@ html[data-bg-tone='dark'] {
   font-size: 12px;
   border-top: 1px solid var(--border);
   text-align: center;
+  /* v2.6：直置背景，反色光晕保证页脚任意背景下清晰 */
+  text-shadow: var(--onbg-halo-shadow);
 }
 
 /* ─── Rule ─────────────────────────────────────────── */

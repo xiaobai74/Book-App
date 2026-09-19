@@ -22,6 +22,11 @@ class BookResponse(BaseModel):
     chapter_count: int = 0
     has_epub: bool = False
     has_txt: bool = False
+    has_cover: bool = False
+    description: str | None = None
+    category: str | None = None
+    latest_chapter: str | None = None
+    last_update_time: str | None = None
     is_marked: bool = False
     marked_at: datetime | None = None
     ai_summary: str | None = None

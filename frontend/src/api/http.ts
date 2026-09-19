@@ -19,6 +19,10 @@ const baseURL = electronAPI?.isElectron
     ? `${MOBILE_API_BASE}/api/v1`       // 移动：云端部署的后端
     : '/api/v1'                         // Web 开发模式：走 Vite proxy
 
+/** 运行平台检测（供本地导入等场景按端分支） */
+export const isElectronPlatform = !!electronAPI?.isElectron
+export const isCapacitorPlatform = isCapacitor
+
 /** 跳转到登录页（兼容原生容器 hash 路由和 Web history 路由） */
 function redirectToLogin() {
   if (electronAPI?.isElectron || isCapacitor) {

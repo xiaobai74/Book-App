@@ -3,6 +3,7 @@
 
 GET    /api/v1/books                → 书架列表
 POST   /api/v1/books                → 添加书籍
+POST   /api/v1/books/import         → 导入本地小说文件（.txt/.epub/.pdf/.docx）
 DELETE /api/v1/books/{book_id}      → 删除书籍（v1.2 清理本地文件）
 GET    /api/v1/books/{book_id}      → 书籍详情
 
@@ -33,11 +34,14 @@ POST   /api/v1/crawl-sources/test           → 测试自定义规则
 import asyncio
 import ipaddress
 import json
+import logging
 import os
+import tempfile
 from math import ceil
+from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -62,6 +66,8 @@ from app.schemas.book import (
     SourceItem,
 )
 from app.schemas.common import ApiResponse, PaginationMeta
+from app.models.book import Book
+from app.models.chapter import Chapter
 from app.services.book_service import (
     BookService,
     book_to_response,
@@ -69,6 +75,9 @@ from app.services.book_service import (
     chapter_to_response,
 )
 from app.services.crawl_source_service import CrawlSourceService
+from app.services.epub_service import epub_service
+from app.services.import_service import import_service
+from app.services.txt_service import txt_service
 from app.services.crawl_manager import (
     get_crawl_progress,
     subscribe_crawl,
@@ -76,9 +85,11 @@ from app.services.crawl_manager import (
 )
 from app.services.crawler_service import crawler
 from app.services.search_service import search_service
-from app.utils.deps import get_current_user
+from app.utils.deps import get_current_user, get_current_user_flexible
 
 router = APIRouter(tags=["书架 / 搜索 / 抓取"])
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -124,9 +135,142 @@ async def create_book(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """手动添加一本书到书架"""
+    """手动添加一本书到书架；若提供源站链接，自动抓取封面/简介等元数据。"""
     book = await BookService.create_book(db, current_user, data)
+    # 添加时自动抓取源站元数据（封面/简介/分类/最新章节/更新时间）。
+    # 有界超时保护，失败静默降级——不阻断添加流程。
+    if book.source_url:
+        try:
+            await asyncio.wait_for(BookService.enrich_metadata(db, book), timeout=30)
+        except asyncio.TimeoutError:
+            logger.warning(f"元数据抓取超时（30s），已跳过: book_id={book.id}")
+        except Exception:  # noqa: BLE001 元数据异常不影响添加
+            logger.exception(f"元数据抓取异常，已跳过: book_id={book.id}")
     return ApiResponse.ok(data=book_to_response(book))
+
+
+# ============================================================
+# 本地文件导入
+# ============================================================
+
+# 允许导入的扩展名与单文件大小上限（50MB）
+ALLOWED_IMPORT_EXTS = {".txt", ".epub", ".pdf", ".docx"}
+MAX_IMPORT_SIZE = 50 * 1024 * 1024
+
+
+@router.post(
+    "/books/import",
+    response_model=ApiResponse[BookResponse],
+    summary="导入本地小说文件",
+)
+async def import_book(
+    file: UploadFile = File(..., description="本地小说文件（.txt/.epub/.pdf/.docx）"),
+    title: str | None = Form(default=None, max_length=500, description="书名（选填，覆盖自动推断）"),
+    author: str | None = Form(default=None, max_length=255, description="作者（选填，覆盖自动推断）"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """上传本地小说文件，解析章节入库并生成 .epub/.txt，导入后即可在线阅读。
+
+    元数据优先级：表单 title/author（非空）> 文件内嵌元数据 > 文件名推断。
+    解析为同步执行（≤50MB 本地文件耗时可控）；失败时书籍状态置 failed。
+    """
+    # ── 1. 校验扩展名 ──
+    original_name = file.filename or "upload.txt"
+    ext = Path(original_name).suffix.lower()
+    if ext not in ALLOWED_IMPORT_EXTS:
+        raise AppException(
+            status_code=400,
+            detail=f"不支持的文件格式：{ext or '未知'}，仅支持 .txt/.epub/.pdf/.docx",
+        )
+
+    # ── 2. 读取内容并校验大小 ──
+    raw = await file.read()
+    if len(raw) > MAX_IMPORT_SIZE:
+        raise AppException(status_code=413, detail="文件超过 50MB 上限，请压缩或拆分后重试")
+    if not raw:
+        raise AppException(status_code=400, detail="文件内容为空")
+
+    # ── 3. 写入临时文件（保留扩展名供解析器识别） ──
+    tmp_path: str | None = None
+    book: Book | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
+
+        # ── 4. 解析（传入原始文件名，避免元数据被随机临时文件名污染） ──
+        parsed = import_service.parse(tmp_path, ext, original_name)
+        if not parsed.chapters:
+            raise AppException(status_code=400, detail="未能从文件解析出有效内容")
+
+        # ── 5. 元数据裁决：表单 > 内嵌 > 文件名 ──
+        inferred_title, inferred_author = _infer_metadata_from_name(original_name)
+        final_title = (title or "").strip() or (parsed.title or "").strip() or inferred_title or Path(original_name).stem
+        final_author = (author or "").strip() or (parsed.author or "").strip() or inferred_author or "未知"
+        final_title = final_title[:500]
+        final_author = final_author[:255]
+
+        # ── 6. 创建书籍（source_url 为空，标识本地导入） ──
+        book = await BookService.create_book(
+            db, current_user,
+            BookCreateRequest(title=final_title, author=final_author, source_url=None),
+        )
+        book_id = book.id
+
+        # ── 7. 批量写入章节 ──
+        for idx, ch in enumerate(parsed.chapters, 1):
+            db.add(Chapter(
+                book_id=book_id,
+                index=idx,
+                title=(ch.title or f"第{idx}章")[:500],
+                content=ch.content,
+                word_count=len(ch.content),
+            ))
+        book.chapter_count = len(parsed.chapters)
+
+        # ── 8. 复用现有服务生成 .epub / .txt ──
+        chapter_dicts = [{"title": ch.title, "content": ch.content} for ch in parsed.chapters]
+        book.epub_path = epub_service.generate(book_id, final_title, final_author, chapter_dicts)
+        book.txt_path = txt_service.generate(book_id, final_title, final_author, chapter_dicts)
+
+        # ── 9. 状态置 done 并提交 ──
+        book.status = "done"
+        await db.commit()
+        await db.refresh(book)
+        return ApiResponse.ok(data=book_to_response(book))
+
+    except AppException:
+        # 业务异常：若书籍已创建则标记 failed
+        if book is not None:
+            book.status = "failed"
+            await db.commit()
+        raise
+    except Exception as exc:  # noqa: BLE001 解析/生成异常统一回滚
+        logger.exception("导入本地文件失败: %s", original_name)
+        if book is not None:
+            book.status = "failed"
+            try:
+                await db.commit()
+            except Exception:  # noqa: BLE001
+                await db.rollback()
+        else:
+            await db.rollback()
+        raise AppException(status_code=500, detail=f"导入失败：{exc}") from exc
+    finally:
+        # ── 10. 清理临时文件 ──
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def _infer_metadata_from_name(filename: str) -> tuple[str | None, str | None]:
+    """文件名推断兜底（与 import_service 内部逻辑一致，供接口层裁决使用）。"""
+    from app.services.import_service import _infer_from_filename
+    t, a = _infer_from_filename(filename)
+    return t, a
 
 
 @router.get(
@@ -142,6 +286,44 @@ async def get_book(
     """获取单本小说详情"""
     book = await BookService.get_book_detail(db, current_user, book_id)
     return ApiResponse.ok(data=book_to_response(book))
+
+
+@router.get(
+    "/books/{book_id}/cover",
+    summary="获取书籍封面图片",
+)
+async def get_book_cover(
+    book_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_flexible),
+):
+    """返回本地缓存的封面图片，供前端 <img> 直接加载。
+
+    浏览器无法为 <img> 请求附加 Authorization 头，因此鉴权支持
+    ?token= 查询参数（见 get_current_user_flexible）；仍校验书籍归属。
+    """
+    book = await BookService.get_book_detail(db, current_user, book_id)
+    if not book.cover_path or not os.path.exists(book.cover_path):
+        raise AppException(status_code=404, detail="该书籍暂无封面")
+    return FileResponse(book.cover_path, media_type=_guess_image_media_type(book.cover_path))
+
+
+def _guess_image_media_type(path: str) -> str:
+    """根据文件头字节推断图片 MIME 类型（下载时统一存为 .jpg，实际可能为 png/webp 等）。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(12)
+    except OSError:
+        return "image/jpeg"
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    return "image/jpeg"
 
 
 @router.delete(

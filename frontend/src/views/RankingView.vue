@@ -247,7 +247,7 @@ async function addToShelf(item: RankingBook) {
 .source-board-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 
 /* ── 榜单列表（v2.0：玻璃条目 + 朱砂榜首徽标） ── */
-.cache-tip { font-size: 12px; color: var(--onbg-muted); margin: 0 0 8px; }   /* v2.5.2：直置背景，自适应墨色 */
+.cache-tip { font-size: 12px; color: var(--onbg-muted); margin: 0 0 8px; text-shadow: var(--onbg-halo-shadow); }   /* v2.5.2：直置背景，自适应墨色；v2.6 反色光晕 */
 .rank-list {
   list-style: none;
   margin: 0;

@@ -8,6 +8,8 @@
    ═══════════════════════════════════════════════════════ */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { aiRecommendBooks } from '@/api/books'
+import type { AiRecommendResult } from '@/types'
 
 export const useSearchPageStore = defineStore('searchPage', () => {
   /** 当前搜索 tab：书架内 / 全网 */
@@ -30,6 +32,43 @@ export const useSearchPageStore = defineStore('searchPage', () => {
   const shelfUrls = ref<string[]>([])
   const shelfUrlsLoaded = ref(false)
 
+  // ── 全网搜索 · AI 题材推荐状态（v2.6）────────────────
+  /** AI 推荐请求进行中 */
+  const webRecommending = ref(false)
+  /** 当前推荐列表（2-3 本） */
+  const webRecommendations = ref<AiRecommendResult[]>([])
+  /** 产生当前推荐的题材输入（用于切 tab 缓存判断） */
+  const webRecommendQuery = ref('')
+  /** 用户是否已选中某本推荐 → 决定显示推荐卡片还是全网结果 */
+  const webRecommendSelected = ref(false)
+  /** 本次是否因 Dify 不可用/无推荐而回退为直接全网搜索（用于提示） */
+  const webAiFallback = ref(false)
+
+  /**
+   * 执行 AI 题材推荐（全网搜索 tab）。
+   * 成功返回 2-3 本推荐并写入状态；失败或空推荐返回 []（由调用方回退）。
+   */
+  async function performWebRecommend(q: string): Promise<AiRecommendResult[]> {
+    const query = q.trim()
+    if (!query) return []
+    webRecommending.value = true
+    try {
+      const { data } = await aiRecommendBooks(query)
+      if (data.success && data.data && data.data.length) {
+        webRecommendations.value = data.data
+        webRecommendQuery.value = query
+        return data.data
+      }
+      webRecommendations.value = []
+      return []
+    } catch {
+      webRecommendations.value = []
+      return []
+    } finally {
+      webRecommending.value = false
+    }
+  }
+
   return {
     mode,
     query,
@@ -40,6 +79,12 @@ export const useSearchPageStore = defineStore('searchPage', () => {
     lastWebQuery,
     addedBookIds,
     shelfUrls,
-    shelfUrlsLoaded
+    shelfUrlsLoaded,
+    webRecommending,
+    webRecommendations,
+    webRecommendQuery,
+    webRecommendSelected,
+    webAiFallback,
+    performWebRecommend
   }
 })

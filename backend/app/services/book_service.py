@@ -99,6 +99,45 @@ class BookService:
         return book
 
     @staticmethod
+    async def enrich_metadata(db: AsyncSession, book: Book) -> None:
+        """从源站详情页抓取封面/简介等元数据并写回 book（不提交，由调用方 commit）。
+
+        仅在 book.source_url 存在时执行；任何失败静默降级，不影响添加流程。
+        不覆盖用户已填写的书名；作者为「未知」时用源站值补全。
+        封面下载到本地 cover_output_dir/{book_id}.jpg，规避防盗链、支持离线。
+        """
+        if not book.source_url:
+            return
+        from app.config import settings
+        from app.services.crawler_service import crawler
+
+        try:
+            meta = await crawler.fetch_book_metadata(book.source_url)
+        except Exception as e:  # noqa: BLE001 元数据非关键路径
+            logger.warning(f"元数据抓取失败: book_id={book.id} — {e}")
+            return
+
+        # 文本元数据（不覆盖用户填写的书名；作者仅在为空/未知时补全）
+        if meta.description:
+            book.description = meta.description
+        if meta.category:
+            book.category = meta.category[:255]
+        if meta.latest_chapter:
+            book.latest_chapter = meta.latest_chapter[:500]
+        if meta.last_update_time:
+            book.last_update_time = meta.last_update_time[:100]
+        if meta.author and (not book.author or book.author == "未知"):
+            book.author = meta.author[:255]
+
+        # 封面：下载到本地
+        if meta.cover_url:
+            book.cover_url = meta.cover_url[:2048]
+            dest = os.path.join(settings.cover_output_dir, f"{book.id}.jpg")
+            ok = await crawler.download_cover(meta.cover_url, dest, referer=book.source_url)
+            if ok:
+                book.cover_path = dest
+
+    @staticmethod
     async def get_book_detail(db: AsyncSession, user: User, book_id: str) -> Book:
         """
         获取单本小说详情。
@@ -130,6 +169,7 @@ class BookService:
         book = await BookService.get_book_detail(db, user, book_id)
         epub_path = book.epub_path
         txt_path = book.txt_path
+        cover_path = book.cover_path
 
         book.deleted_at = datetime.now(UTC)
         await db.flush()
@@ -140,7 +180,7 @@ class BookService:
         await db.flush()
 
         # 清理本地文件
-        for path in (epub_path, txt_path):
+        for path in (epub_path, txt_path, cover_path):
             if not path:
                 continue
             try:
@@ -439,6 +479,11 @@ def book_to_response(book: Book) -> BookResponse:
         chapter_count=book.chapter_count,
         has_epub=book.epub_path is not None and book.epub_path != "",
         has_txt=book.txt_path is not None and book.txt_path != "",
+        has_cover=book.cover_path is not None and book.cover_path != "",
+        description=book.description,
+        category=book.category,
+        latest_chapter=book.latest_chapter,
+        last_update_time=book.last_update_time,
         is_marked=book.is_marked,
         marked_at=book.marked_at,
         ai_summary=book.ai_summary,

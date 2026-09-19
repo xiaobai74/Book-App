@@ -91,13 +91,3 @@ export async function deleteBackgroundImage(id: string): Promise<void> {
     tx.onerror = () => reject(tx.error ?? new Error('删除背景图片失败'))
   })
 }
-
-/** 列出全部已保存图片（当前仅保留单张自定义背景，备用） */
-export async function listBackgroundImages(): Promise<StoredBackgroundImage[]> {
-  const db = await getDb()
-  return new Promise((resolve, reject) => {
-    const request = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll()
-    request.onsuccess = () => resolve(request.result as StoredBackgroundImage[])
-    request.onerror = () => reject(request.error ?? new Error('读取背景图片列表失败'))
-  })
-}

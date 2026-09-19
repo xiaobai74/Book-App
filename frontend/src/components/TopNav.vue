@@ -172,7 +172,8 @@ function handleSearch() {
   if (!q) return
   mobileSearchOpen.value = false
   if (searchTarget.value === 'web') {
-    router.push(`/search?q=${encodeURIComponent(q)}`)
+    // v2.6：显式携带 mode=web，意图路由（题材→AI推荐 / 书名→直接搜索）在 SearchView 内完成
+    router.push(`/search?q=${encodeURIComponent(q)}&mode=web`)
   } else {
     // v2.1：AI 开关开启时按查询内容自动识别搜索方式（用户未在结果页手动覆盖的前提下）
     shelfSearch.applySearchMode(q)

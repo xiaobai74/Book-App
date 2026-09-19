@@ -6,12 +6,17 @@
 
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 from app.models.chapter import Chapter  # noqa: F401  确保 Chapter 模型已注册
+
+if TYPE_CHECKING:
+    from app.models.reading_progress import ReadingProgress
+    from app.models.user import User
 
 
 def _now_utc() -> datetime:
@@ -107,6 +112,43 @@ class Book(Base):
         nullable=True,
         default=None,
         comment="AI 摘要生成时间",
+    )
+    # ── 源站元数据（添加书籍时自动抓取，v1.7） ──
+    cover_path: Mapped[str | None] = mapped_column(
+        String(1000),
+        nullable=True,
+        default=None,
+        comment="封面图片本地路径（从源站下载）",
+    )
+    cover_url: Mapped[str | None] = mapped_column(
+        String(2048),
+        nullable=True,
+        default=None,
+        comment="源站封面图片原始 URL",
+    )
+    description: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        default=None,
+        comment="小说简介（源站抓取）",
+    )
+    category: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        default=None,
+        comment="分类（源站抓取）",
+    )
+    latest_chapter: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        default=None,
+        comment="最新章节名（源站抓取）",
+    )
+    last_update_time: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+        default=None,
+        comment="源站最后更新时间（原始文本）",
     )
 
     # 关联

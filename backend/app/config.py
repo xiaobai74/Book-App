@@ -39,10 +39,14 @@ class Settings(BaseSettings):
     dify_api_url: str = "http://localhost:5001/v1"
     dify_api_key: str = ""
     dify_summary_api_key: str = ""
+    # 全网搜索「题材 → 推荐书籍」工作流 API Key（未配置时前端回退为直接全网搜索）
+    dify_recommend_api_key: str = ""
 
     # 导出目录（桌面版存用户数据目录，避免写入安装目录）
     epub_output_dir: str = str(DATA_DIR / "epub_output")
     txt_output_dir: str = str(DATA_DIR / "txt_output")
+    # 封面图片目录（从源站下载到本地，规避防盗链、支持离线展示）
+    cover_output_dir: str = str(DATA_DIR / "cover_output")
 
     # CORS（桌面版前端来自 file:// 或本地动态端口）
     cors_origins: list[str] = [

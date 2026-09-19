@@ -5,7 +5,7 @@ FastAPI 依赖注入
 """
 
 import jwt
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Query
 from fastapi.exceptions import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,6 +54,49 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Token 格式无效")
 
     # 查找用户（排除已软删除）
+    result = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.deleted_at.is_(None),
+        )
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=401, detail="用户不存在或已注销")
+
+    return user
+
+
+async def get_current_user_flexible(
+    authorization: str | None = Header(default=None, description="Bearer <token>"),
+    token: str | None = Query(default=None, description="Access Token（供 <img> 等无法自定义请求头的场景）"),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """允许从 Authorization 头或 ?token= 查询参数认证的当前用户。
+
+    封面图片需通过 <img src> 加载，浏览器无法为其附加 Authorization 头，
+    因此该依赖额外支持从查询参数传递 Access Token。
+    """
+    raw: str | None = None
+    if authorization and authorization.startswith("Bearer "):
+        raw = authorization.removeprefix("Bearer ").strip()
+    if not raw and token:
+        raw = token.strip()
+    if not raw:
+        raise HTTPException(status_code=401, detail="认证方式错误，请使用 Bearer Token 或 ?token= 查询参数")
+
+    try:
+        payload = decode_token(raw)
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token 无效或已过期，请重新登录")
+
+    if payload.get("type") != "access":
+        raise HTTPException(status_code=401, detail="请使用 Access Token 而非 Refresh Token")
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token 格式无效")
+
     result = await db.execute(
         select(User).where(
             User.id == user_id,

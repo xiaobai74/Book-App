@@ -11,6 +11,7 @@
 import asyncio
 import base64
 import logging
+import os
 import random
 import re
 import ssl
@@ -39,6 +40,21 @@ class CrawledChapter:
     index: int
     title: str
     content: str
+
+
+@dataclass
+class BookMetadata:
+    """从源站详情页提取的书籍元数据（v1.7）。
+
+    所有字段均可为 None（源站未提供或提取失败）。
+    """
+    title: str | None = None
+    author: str | None = None
+    cover_url: str | None = None      # 已解析为绝对 URL
+    description: str | None = None
+    category: str | None = None
+    latest_chapter: str | None = None
+    last_update_time: str | None = None
 
 
 @dataclass
@@ -842,6 +858,151 @@ class CrawlerService:
                     f"未能从页面解析到章节链接，请确认 {source_url} 是小说目录页"
                 )
             return chapters
+
+    # ═══════════════════════════════════════════════════════════
+    # 书籍元数据提取（v1.7：封面 / 简介 / 分类 / 最新章节 / 更新时间）
+    # ═══════════════════════════════════════════════════════════
+
+    async def fetch_book_metadata(
+        self,
+        source_url: str,
+        rule: dict | None = None,
+    ) -> BookMetadata:
+        """从书籍详情页提取元数据。
+
+        提取优先级：规则 book 段选择器 > OpenGraph meta 通用兜底。
+        任何网络/解析异常均不抛出，返回已成功提取的部分（供上层容错）。
+        """
+        if rule is None:
+            rule = self._engine.match_rule(source_url)
+        if rule is None:
+            rule = self._engine._build_generic_rule(source_url)
+
+        book_rule = rule.get("book", {}) or {}
+        meta = BookMetadata()
+
+        cookies_raw = (rule.get("search") or {}).get("cookies", "")
+        cookies = self._parse_cookies(cookies_raw) if cookies_raw else None
+
+        try:
+            async with self._make_client(cookies=cookies) as client:
+                html = await self._get(client, source_url)
+        except Exception as e:  # noqa: BLE001 元数据非关键路径，失败静默降级
+            logger.warning(f"获取书籍详情页失败，跳过元数据提取: {source_url} — {e}")
+            return meta
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        def _pick(*selectors: str) -> str | None:
+            """依次尝试选择器，返回首个非空文本（支持 @attr 后缀）。"""
+            for sel in selectors:
+                if not sel:
+                    continue
+                el = self._select_one(soup, sel)
+                if el is None:
+                    continue
+                text = el if isinstance(el, str) else el.get_text(strip=True)
+                text = (text or "").strip()
+                if text:
+                    return text
+            return None
+
+        meta.title = _pick(
+            book_rule.get("bookName", ""), book_rule.get("name", ""),
+            'meta[property="og:novel:book_name"]@content',
+            'meta[property="og:title"]@content',
+            "h1",
+        )
+        meta.author = _pick(
+            book_rule.get("author", ""),
+            'meta[property="og:novel:author"]@content',
+            'meta[property="og:author"]@content',
+        )
+        meta.description = _pick(
+            book_rule.get("intro", ""), book_rule.get("description", ""),
+            'meta[property="og:description"]@content',
+            'meta[name="description"]@content',
+        )
+        meta.category = _pick(
+            book_rule.get("category", ""),
+            'meta[property="og:novel:category"]@content',
+        )
+        meta.latest_chapter = _pick(
+            book_rule.get("latestChapter", ""),
+            'meta[property="og:novel:latest_chapter_name"]@content',
+        )
+        meta.last_update_time = _pick(
+            book_rule.get("lastUpdateTime", ""),
+            'meta[property="og:novel:update_time"]@content',
+        )
+
+        # 封面：选择器可能指向 <img>（取 src）或 <meta>（取 content），需解析为绝对 URL
+        cover_sel = book_rule.get("coverUrl", "") or book_rule.get("cover", "")
+        cover_raw: str | None = None
+        if cover_sel:
+            el = self._select_one(soup, cover_sel)
+            if el is not None:
+                if isinstance(el, str):
+                    cover_raw = el.strip()
+                else:
+                    cover_raw = (el.get("src") or el.get("content") or el.get("href") or "").strip()
+        if not cover_raw:
+            cover_raw = _pick(
+                'meta[property="og:image"]@content',
+                'meta[property="og:novel:cover_url"]@content',
+            )
+        if cover_raw:
+            meta.cover_url = urljoin(source_url, cover_raw)
+
+        # 截断超长简介，避免异常数据污染
+        if meta.description and len(meta.description) > 5000:
+            meta.description = meta.description[:5000]
+
+        logger.info(
+            f"元数据提取《{meta.title or '?'}》: cover={'Y' if meta.cover_url else 'N'} "
+            f"intro={'Y' if meta.description else 'N'} category={meta.category or '-'}"
+        )
+        return meta
+
+    async def download_cover(
+        self,
+        cover_url: str,
+        dest_path: str,
+        referer: str | None = None,
+    ) -> bool:
+        """下载封面图片到本地路径。
+
+        携带 Referer 头以规避常见防盗链；校验响应为图片类型。
+        成功写入 dest_path 返回 True，任何失败返回 False（不抛出）。
+        """
+        if not cover_url:
+            return False
+        try:
+            parent = os.path.dirname(dest_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            headers = {"Referer": referer} if referer else None
+            async with self._make_client() as client:
+                resp = await client.get(cover_url, headers=headers)
+                resp.raise_for_status()
+                ctype = resp.headers.get("content-type", "")
+                looks_image = "image" in ctype or cover_url.lower().split("?")[0].endswith(
+                    (".jpg", ".jpeg", ".png", ".webp", ".gif")
+                )
+                if not looks_image:
+                    logger.warning(f"封面响应非图片类型 ({ctype})，跳过: {cover_url}")
+                    return False
+                data = resp.content
+                if not data or len(data) < 100:
+                    logger.warning(f"封面内容过小，疑似无效: {cover_url}")
+                    return False
+                with open(dest_path, "wb") as f:
+                    f.write(data)
+            logger.info(f"封面已下载: {cover_url} -> {dest_path} ({len(data)} bytes)")
+            return True
+        except Exception as e:  # noqa: BLE001 下载失败不应阻断添加流程
+            logger.warning(f"封面下载失败: {cover_url} — {e}")
+            return False
 
     def _resolve_toc_url(self, source_url: str, rule: dict) -> str:
         """解析目录页地址。

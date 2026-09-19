@@ -340,7 +340,7 @@ function confirmDelete(source: CrawlSource) {
 
 <style scoped>
 .stack { display: flex; flex-direction: column; }
-.lead { font-size: 14px; color: var(--onbg-muted); }
+.lead { font-size: 14px; color: var(--onbg-muted); text-shadow: var(--onbg-halo-shadow); }   /* v2.6：直置背景 + 反色光晕 */
 
 .source-card {
   background: var(--surface);

@@ -1,0 +1,197 @@
+# ═══════════════════════════════════════════════════════════════
+# Dify Chatflow 参考配置：全网搜索 · 题材推荐
+#
+# 导入方式：在 Dify 中"创建应用 → 导入 DSL"，粘贴本文件内容；
+#           导入后将该应用的 API Key 填入 backend/.env 的
+#           dify_recommend_api_key。
+# 类型：Chatflow
+#
+# 功能：接收用户描述的书籍类型 / 自然语言需求，由 LLM 从自身
+#       知识中推荐 2-3 本该类型下知名、受欢迎的中文网络小说，
+#       供用户选择后再执行全网源站搜索。
+#
+# 版本: v0.1.0
+# ═══════════════════════════════════════════════════════════════
+
+app:
+  description: "全网搜索题材推荐 — 描述你想看的书籍类型，AI 推荐 2-3 本相关小说供你选择后全网搜索"
+  icon: "🔎"
+  icon_background: "#E0F2FE"
+  mode: chat
+  name: "全网题材推荐"
+
+kind: app
+
+version: 0.1.0
+
+workflow:
+  conversation_variables: []
+
+  features:
+    file_upload:
+      enabled: false
+    opening_statement: "你好！告诉我你想看的书籍类型（如「修仙」「科幻」「悬疑推理」），我会推荐几本相关的好书，你选一本我就帮你去全网搜索。"
+    suggested_questions:
+      - "推荐几本修仙小说"
+      - "想看科幻的"
+      - "有没有好看的悬疑推理"
+      - "找几本都市爽文"
+    suggested_questions_after_answer:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    text_to_speech:
+      enabled: false
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+
+  graph:
+    edges:
+      - id: "start-to-llm"
+        source: "start"
+        sourceHandle: "source"
+        target: "llm"
+        targetHandle: "target"
+      - id: "llm-to-code"
+        source: "llm"
+        sourceHandle: "source"
+        target: "code"
+        targetHandle: "target"
+      - id: "code-to-answer"
+        source: "code"
+        sourceHandle: "source"
+        target: "answer"
+        targetHandle: "target"
+
+    nodes:
+      # ══ 节点 1: 开始 — 接收用户输入 ═══════════════════════════════
+      - id: "start"
+        type: "start"
+        position:
+          x: 80
+          "y": 140
+        data:
+          title: "开始"
+          type: "start"
+          variables:
+            - label: "书籍类型 / 自然语言需求描述"
+              max_length: 500
+              options: []
+              required: true
+              type: "text-input"
+              variable: "query"
+
+      # ══ 节点 2: LLM — 按题材推荐书籍 ═══════════════════════════════
+      - id: "llm"
+        type: "llm"
+        position:
+          x: 380
+          "y": 140
+        data:
+          title: "题材推荐"
+          type: "llm"
+          model:
+            mode: "chat"
+            name: "gpt-4o-mini"
+            provider: "openai"
+            completion_params:
+              temperature: 0.3
+              max_tokens: 1500
+          prompt_template:
+            - role: "system"
+              text: |
+                你是一个中文网络小说推荐引擎。用户会用自然语言描述想看的书籍类型或需求。
+
+                请根据用户的描述，从你的知识中推荐 2-3 本该类型下**知名、受欢迎、口碑较好**的中文网络小说。
+
+                **推荐原则**：
+                1. 优先推荐该题材下的经典 / 高知名度作品，确保大多数源站能搜索到。
+                2. 书名与作者必须真实、准确，不要编造不存在的作品。
+                3. 3 本之间尽量有区分度（不同作者 / 不同风格），覆盖用户的潜在偏好。
+                4. 如果用户描述过于宽泛或无法判断具体类型，也要给出该方向下最主流的 2-3 本。
+                5. 如果完全无法理解用户需求或与小说无关，返回空数组 []。
+
+                **输出格式**：严格的 JSON 数组（不要包在 markdown 代码块中，不要输出任何额外文字），每个元素包含：
+                - title: 书名（不带书名号）
+                - author: 作者
+                - reason: 面向用户的一句话推荐理由（中文，20 字以内），如「修仙题材经典之作」「硬核科幻，设定严谨」
+
+                示例输出：
+                [{"title":"凡人修仙传","author":"忘语","reason":"修仙题材现象级经典"},{"title":"遮天","author":"辰东","reason":"仙侠宏大世界观代表作"},{"title":"一念永恒","author":"耳根","reason":"轻松热血的修仙爽文"}]
+
+            - role: "user"
+              text: "{{#start.query#}}"
+          memory:
+            window:
+              enabled: false
+          variables: []
+          context:
+            enabled: false
+
+      # ══ 节点 3: Code — 解析/校验 JSON ═══════════════════════════════
+      - id: "code"
+        type: "code"
+        position:
+          x: 680
+          "y": 140
+        data:
+          title: "解析结果"
+          type: "code"
+          code_language: "python3"
+          code: |
+            import json
+
+            def main(llm_output: str) -> dict:
+                """解析 LLM 输出的 JSON 数组，确保格式正确"""
+                try:
+                    results = json.loads(llm_output)
+                    if not isinstance(results, list):
+                        results = []
+                except json.JSONDecodeError:
+                    import re
+                    match = re.search(r'\[.*\]', llm_output, re.DOTALL)
+                    if match:
+                        try:
+                            results = json.loads(match.group())
+                        except json.JSONDecodeError:
+                            results = []
+                    else:
+                        results = []
+
+                valid_results = []
+                for item in results[:3]:
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(item.get("title", "")).strip()
+                    if not title:
+                        continue
+                    valid_results.append({
+                        "title": title,
+                        "author": str(item.get("author", "未知")).strip() or "未知",
+                        "reason": str(item.get("reason", "")).strip(),
+                    })
+
+                return {"results": json.dumps(valid_results, ensure_ascii=False)}
+
+          variables:
+            - variable: "llm_output"
+              value_selector:
+                - "llm"
+                - "text"
+          outputs:
+            - name: "results"
+              type: "string"
+              children: null
+
+      # ══ 节点 4: 回答 — 返回结构化结果 ═════════════════════════════
+      - id: "answer"
+        type: "answer"
+        position:
+          x: 980
+          "y": 140
+        data:
+          title: "直接回复"
+          type: "answer"
+          answer: "{{#code.results#}}"

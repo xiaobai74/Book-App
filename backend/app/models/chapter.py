@@ -6,11 +6,16 @@
 
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.book import Book
 
 
 def _now_utc() -> datetime:
@@ -41,7 +46,9 @@ class Chapter(Base):
         comment="章节标题",
     )
     content: Mapped[str] = mapped_column(
-        Text,
+        # MySQL 的 TEXT 仅 64KB（utf8mb4 下中文约 3 字节/字，长章节易超），
+        # 改用 MEDIUMTEXT（16MB）；SQLite 的 TEXT 无长度限制，保持默认。
+        Text().with_variant(MEDIUMTEXT, "mysql"),
         nullable=False,
         comment="章节正文",
     )

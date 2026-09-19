@@ -44,3 +44,10 @@ frontend/android/app/.cxx/
 
 # Local Claude configuration
 .claude/
+
+# Reference material (large, not part of the app)
+参考项目/
+
+# Scratch / verification artifacts
+backend/*_tmp.py
+backend/*.log

@@ -2,6 +2,7 @@
 AI 功能路由（v1.3 新增）
 
 POST   /api/v1/ai/search               → 自然语言书架搜索
+POST   /api/v1/ai/recommend             → 全网搜索题材推荐
 POST   /api/v1/ai/summary/{book_id}     → 触发 AI 摘要生成
 GET    /api/v1/ai/summary/{book_id}     → 获取 AI 摘要
 """
@@ -48,6 +49,25 @@ class AiSearchResultItem(BaseModel):
     score: int
 
 
+class AiRecommendRequest(BaseModel):
+    """AI 全网题材推荐请求"""
+    query: str = Field(..., description="书籍类型 / 自然语言需求描述")
+
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, v: str) -> str:
+        if len(v.strip()) > 500:
+            raise ValueError("搜索关键词最长 500 字符")
+        return v
+
+
+class AiRecommendResultItem(BaseModel):
+    """AI 题材推荐结果项"""
+    title: str
+    author: str
+    reason: str
+
+
 class SummaryStatusResponse(BaseModel):
     """摘要状态响应"""
     status: str  # queued | generating | running | done | failed | none
@@ -84,6 +104,33 @@ async def ai_search(
 
     results = await ai_service.semantic_search(current_user, body.query.strip())
     return ApiResponse.ok(data=[AiSearchResultItem(**r) for r in results])
+
+
+@router.post(
+    "/recommend",
+    response_model=ApiResponse[list[AiRecommendResultItem]],
+    summary="AI 全网搜索题材推荐",
+)
+async def ai_recommend(
+    body: AiRecommendRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    根据用户描述的书籍类型，由 LLM 推荐 2-3 本相关小说（全网搜索用）。
+
+    示例查询:
+    - "修仙"
+    - "想看科幻的"
+    - "好看的悬疑推理"
+
+    后端调用 Dify 推荐工作流；Dify 未配置或调用失败时返回空列表，
+    由前端回退为直接用原输入执行全网搜索。
+    """
+    if not body.query or len(body.query.strip()) < 2:
+        raise AppException(status_code=400, detail="搜索关键词至少需要 2 个字符")
+
+    results = await ai_service.recommend_books_by_genre(body.query.strip())
+    return ApiResponse.ok(data=[AiRecommendResultItem(**r) for r in results])
 
 
 @router.post(

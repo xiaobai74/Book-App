@@ -203,7 +203,48 @@
               <template v-if="!booksStore.sourcesLoaded">正在加载源站列表…</template>
               <template v-else>输入书名或作者，在 {{ booksStore.sources.length || '多' }} 个源站中搜索</template>
             </p>
-            <p style="font-size:12px;margin-top:6px;color:var(--onbg-muted)">搜索结果可一键添加到书架，然后抓取生成电子书</p>
+            <p class="onbg-note" style="font-size:12px;margin-top:6px">搜索结果可一键添加到书架，然后抓取生成电子书</p>
+          </div>
+
+          <!-- AI 题材推荐进行中（v2.6：AI 开启 + 输入为题材/描述） -->
+          <div v-else-if="sp.webRecommending" class="empty-state">
+            <div class="ai-search-progress" aria-live="polite">
+              <span class="ai-search-dots">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+              </span>
+              <span class="ai-search-text">AI 正在根据“{{ currentQ }}”推荐相关书籍…</span>
+            </div>
+          </div>
+
+          <!-- AI 推荐结果：选择一本开始全网搜索（v2.6） -->
+          <div v-else-if="sp.webRecommendations.length && !sp.webRecommendSelected">
+            <div class="ai-auto-indicator" role="status">
+              <span>🤖 AI 为你推荐（选择一本开始全网搜索）</span>
+            </div>
+            <div class="stack" style="gap:12px">
+              <div v-for="(rec, idx) in sp.webRecommendations" :key="idx" class="search-card">
+                <div style="display:flex;align-items:flex-start;gap:16px">
+                  <div style="flex-shrink:0">
+                    <BookCoverSmall :title="rec.title" />
+                  </div>
+                  <div style="flex:1;min-width:0">
+                    <div class="search-title">{{ rec.title }}</div>
+                    <div class="search-author">{{ rec.author }}</div>
+                    <div v-if="rec.reason" class="ai-match-reason" style="margin-top:6px">{{ rec.reason }}</div>
+                    <div style="margin-top:10px">
+                      <el-button type="primary" size="small" @click="selectRecommendation(rec)">搜索这本</el-button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style="margin-top:16px;text-align:center">
+              <el-button size="small" text type="primary" @click="searchWebDirect(currentQ)">
+                跳过推荐，直接搜索“{{ currentQ }}”
+              </el-button>
+            </div>
           </div>
 
           <!-- 加载中 -->
@@ -228,11 +269,27 @@
           <!-- 无结果 -->
           <div v-else-if="booksStore.externalResults.length === 0" class="empty-state">
             <p>全网未找到相关小说，请尝试其他关键词</p>
+            <el-button
+              v-if="sp.webRecommendSelected && sp.webRecommendations.length"
+              size="small"
+              text
+              type="primary"
+              style="margin-top:12px"
+              @click="backToRecommend"
+            >
+              ← 重新选择题材推荐
+            </el-button>
           </div>
 
           <!-- 搜索结果列表 -->
           <div v-else>
-            <div style="margin-bottom:12px;font-size:13px;color:var(--onbg-muted)">
+            <div v-if="sp.webAiFallback" class="ai-auto-indicator" role="status">
+              <span>AI 推荐不可用，已按关键词搜索</span>
+            </div>
+            <div v-else-if="sp.webRecommendSelected && sp.webRecommendations.length" class="ai-auto-indicator" role="status">
+              <el-button size="small" text type="primary" @click="backToRecommend">← 重新选择题材推荐</el-button>
+            </div>
+            <div class="onbg-note" style="margin-bottom:12px;font-size:13px">
               找到 <span class="num" style="font-family:var(--font-mono)">{{ booksStore.externalResults.length }}</span> 条结果
             </div>
             <div class="stack" style="gap:12px">
@@ -292,7 +349,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useBooksStore, useShelfSearchStore, useSearchPageStore } from '@/stores'
@@ -305,7 +362,6 @@ import BookCoverSmall from '@/components/BookCoverSmall.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 
 const route = useRoute()
-const router = useRouter()
 const booksStore = useBooksStore()
 /** v1.9：书架内 AI 语义搜索状态与 TopNav 主搜索框共享 */
 const shelfSearch = useShelfSearchStore()
@@ -346,7 +402,9 @@ const queryPlaceholder = computed(() => {
       ? '输入书名、作者或自然语言描述…'
       : '在书架中按书名或作者搜索…'
   }
-  return '输入书名或作者，全网搜索…'
+  return shelfSearch.aiEnabled
+    ? '输入书籍类型（如 修仙/科幻）或书名，全网搜索…'
+    : '输入书名或作者，全网搜索…'
 })
 
 /** 书架内结果列表：AI 模式用语义搜索结果（仅长度判断），普通模式用服务端分页结果 */
@@ -424,6 +482,8 @@ function hasCachedResults(mode: 'shelf' | 'web'): boolean {
   const q = sp.currentQ
   if (!q) return false
   if (mode === 'web') {
+    // v2.6：AI 推荐面板（含已选中展示结果）视为已缓存，避免切 tab 重复请求
+    if (sp.webRecommendations.length && sp.webRecommendQuery === q) return true
     return sp.lastWebQuery === q && !booksStore.externalError
   }
   if (aiActive.value) {
@@ -455,6 +515,16 @@ async function doSearch() {
         sp.lastShelfQuery = q
       }
     } else {
+      // v2.6：全网搜索——AI 开启且输入为题材/描述时先走 AI 推荐；
+      // 否则（具体书名/作者、AI 关闭、推荐不可用）直接全网搜索
+      sp.webAiFallback = false
+      sp.webRecommendSelected = false
+      if (shelfSearch.aiEnabled && detectQueryIntent(q) === 'ai') {
+        const recs = await sp.performWebRecommend(q)
+        if (recs.length) return // 展示推荐卡片，等用户选择
+        sp.webAiFallback = true // Dify 不可用/无推荐 → 回退
+      }
+      sp.webRecommendations = []
       // v2.0：全网搜索不再按源站筛选，始终搜索全部源站
       await booksStore.searchExternal(q)
       if (!booksStore.externalError) {
@@ -464,6 +534,41 @@ async function doSearch() {
   } finally {
     isSearching.value = false
   }
+}
+
+/** v2.6：用户选中一本 AI 推荐书籍 → 以书名执行全网搜索 */
+async function selectRecommendation(rec: { title: string; author: string; reason: string }) {
+  sp.webRecommendSelected = true
+  searchQuery.value = rec.title
+  isSearching.value = true
+  try {
+    await booksStore.searchExternal(rec.title)
+    if (!booksStore.externalError) {
+      sp.lastWebQuery = rec.title
+    }
+  } finally {
+    isSearching.value = false
+  }
+}
+
+/** v2.6：跳过 AI 推荐，直接用给定关键词全网搜索 */
+async function searchWebDirect(q: string) {
+  sp.webRecommendations = []
+  sp.webRecommendSelected = false
+  isSearching.value = true
+  try {
+    await booksStore.searchExternal(q)
+    if (!booksStore.externalError) {
+      sp.lastWebQuery = q
+    }
+  } finally {
+    isSearching.value = false
+  }
+}
+
+/** v2.6：返回 AI 推荐面板重新选择（保留已有推荐） */
+function backToRecommend() {
+  sp.webRecommendSelected = false
 }
 
 /** v2.1：结果页一次性切换搜索方式（AI ⇄ 普通）并重新搜索 */

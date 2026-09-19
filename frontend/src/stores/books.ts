@@ -7,6 +7,7 @@ import { ref, computed } from 'vue'
 import {
   getBooks,
   addBook as addBookApi,
+  importBookFile,
   deleteBook as deleteBookApi,
   searchBooks,
   searchBooksExternal,
@@ -262,6 +263,19 @@ export const useBooksStore = defineStore('books', () => {
     throw new Error(data.error || '添加失败')
   }
 
+  /** 导入本地小说文件（上传 → 后端解析入库 → 本地同步书架列表） */
+  async function importBook(file: File | Blob, filename: string, title?: string, author?: string) {
+    const { data } = await importBookFile(file, filename, title, author)
+    if (data.success && data.data) {
+      allBooks.value = [...allBooks.value, data.data].sort(compareBooks)
+      filteredBooks.value = [...allBooks.value]
+      books.value = [data.data, ...books.value]
+      pagination.value.total += 1
+      return data.data
+    }
+    throw new Error(data.error || '导入失败')
+  }
+
   /** 删除书籍 */
   async function removeBook(bookId: string) {
     const { data } = await deleteBookApi(bookId)
@@ -400,6 +414,7 @@ export const useBooksStore = defineStore('books', () => {
     // 原有方法
     fetchBookDetail,
     addBook,
+    importBook,
     removeBook,
     search,
     searchExternal,

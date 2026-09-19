@@ -242,7 +242,8 @@ function updateBgTone(scene: BackgroundScene, palette: BackgroundPalette, imageU
         for (let i = 0; i < data.length; i += 4) {
           sum += (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255
         }
-        root.setAttribute('data-bg-tone', sum / (data.length / 4) < 0.45 ? 'dark' : 'light')
+        // v2.6：阈值 0.45→0.35，中调背景更多落到「浓墨」安全侧（配合反色光晕保证可读）
+        root.setAttribute('data-bg-tone', sum / (data.length / 4) < 0.35 ? 'dark' : 'light')
       } catch {
         root.setAttribute('data-bg-tone', 'light')
       }
@@ -254,7 +255,8 @@ function updateBgTone(scene: BackgroundScene, palette: BackgroundPalette, imageU
     scene === 'none'
       ? hexLuminance(palette.bg)
       : hexLuminance(palette.bg) * 0.55 + hexLuminance(palette.sceneDeep) * 0.45
-  root.setAttribute('data-bg-tone', lum < 0.4 ? 'dark' : 'light')
+  // v2.6：阈值 0.4→0.35，与图片采样一致，减少中调误选
+  root.setAttribute('data-bg-tone', lum < 0.35 ? 'dark' : 'light')
 }
 
 /** 按预设 id 查预设（找不到返回 undefined） */

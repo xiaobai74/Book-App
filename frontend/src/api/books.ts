@@ -2,7 +2,7 @@
    小说管理App · 书架 & 搜索 API
    ═══════════════════════════════════════════════════════ */
 import http, { API_BASE_URL } from './http'
-import type { ApiResponse, Book, BookDetail, ChapterSummary, ChapterDetail, ReadingProgress, AddBookRequest, CrawlStatus, CrawlStreamEvent, SearchParams, SearchResultItem, SourceItem, CrawlSource, CrawlSourceFormData, CrawlSourceTestRequest, CrawlSourceTestResult, AiSearchResult } from '@/types'
+import type { ApiResponse, Book, BookDetail, ChapterSummary, ChapterDetail, ReadingProgress, AddBookRequest, CrawlStatus, CrawlStreamEvent, SearchParams, SearchResultItem, SourceItem, CrawlSource, CrawlSourceFormData, CrawlSourceTestRequest, CrawlSourceTestResult, AiSearchResult, AiRecommendResult } from '@/types'
 
 /** 获取书架列表 */
 export function getBooks(page = 1, page_size = 20, marked?: boolean | null) {
@@ -14,6 +14,27 @@ export function getBooks(page = 1, page_size = 20, marked?: boolean | null) {
 /** 添加书籍 */
 export function addBook(data: AddBookRequest) {
   return http.post<ApiResponse<Book>>('/books', data)
+}
+
+/** 导入本地小说文件（.txt/.epub/.pdf/.docx）
+ *
+ * 以 multipart/form-data 上传文件，可携带用户编辑后的书名/作者覆盖自动推断。
+ * 大文件解析耗时较长，超时放宽至 120s。
+ */
+export function importBookFile(
+  file: File | Blob,
+  filename: string,
+  title?: string,
+  author?: string,
+) {
+  const fd = new FormData()
+  fd.append('file', file, filename)
+  if (title && title.trim()) fd.append('title', title.trim())
+  if (author && author.trim()) fd.append('author', author.trim())
+  return http.post<ApiResponse<Book>>('/books/import', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+  })
 }
 
 /** 查看书籍详情 */
@@ -145,6 +166,19 @@ export function getDownloadUrl(bookId: string, format: 'epub' | 'txt' = 'epub') 
   return `${API_BASE_URL}/books/${bookId}/download?format=${format}`
 }
 
+/** 获取封面图片 URL（供 <img src> 直接加载）
+ *
+ * <img> 无法携带 Authorization 头，因此将 Access Token 以 ?token=
+ * 查询参数传递（后端 get_current_user_flexible 支持）。无封面或
+ * 未登录时返回 null，由调用方回退到渐变占位封面。
+ */
+export function getCoverUrl(bookId: string, hasCover?: boolean): string | null {
+  if (hasCover === false) return null
+  const token = localStorage.getItem('access_token')
+  if (!token) return null
+  return `${API_BASE_URL}/books/${bookId}/cover?token=${encodeURIComponent(token)}`
+}
+
 /** 检查源站 URL 连通性 */
 export function checkSourceUrl(url: string) {
   return http.post<ApiResponse<{
@@ -163,11 +197,6 @@ export function checkSourceUrl(url: string) {
 /** 列出当前用户的自定义源站 */
 export function getCrawlSources() {
   return http.get<ApiResponse<CrawlSource[]>>('/crawl-sources')
-}
-
-/** 获取单个自定义源站 */
-export function getCrawlSource(id: number) {
-  return http.get<ApiResponse<CrawlSource>>(`/crawl-sources/${id}`)
 }
 
 /** 创建自定义源站 */
@@ -197,6 +226,11 @@ export function testCrawlSource(data: CrawlSourceTestRequest) {
 /** AI 自然语言搜索（书架内） */
 export function aiSearchBooks(query: string) {
   return http.post<ApiResponse<AiSearchResult[]>>('/ai/search', { query })
+}
+
+/** AI 全网搜索题材推荐（按书籍类型推荐 2-3 本） */
+export function aiRecommendBooks(query: string) {
+  return http.post<ApiResponse<AiRecommendResult[]>>('/ai/recommend', { query })
 }
 
 /** 触发 AI 摘要生成 */

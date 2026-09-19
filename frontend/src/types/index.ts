@@ -15,6 +15,16 @@ export interface Book {
   chapter_count: number
   has_epub: boolean
   has_txt: boolean
+  /** 是否有本地缓存的源站封面（v1.7） */
+  has_cover: boolean
+  /** 小说简介（源站抓取，v1.7） */
+  description: string | null
+  /** 分类（源站抓取，v1.7） */
+  category: string | null
+  /** 最新章节名（源站抓取，v1.7） */
+  latest_chapter: string | null
+  /** 源站最后更新时间（原始文本，v1.7） */
+  last_update_time: string | null
   is_marked: boolean
   marked_at: string | null
   added_at: string
@@ -133,6 +143,27 @@ export interface AddBookRequest {
   source_url?: string | null
 }
 
+/** 移动端扫描到的设备文件 */
+export interface ScannedFile {
+  name: string
+  path: string
+  size: number
+  ext: string
+  mtime?: number
+  /** Capacitor Directory 枚举值（读取文件时定位根目录） */
+  directory?: string
+}
+
+/** 导入队列中的单个文件项 */
+export interface ImportItem {
+  file: File | Blob
+  filename: string
+  title: string
+  author: string
+  status: 'pending' | 'uploading' | 'done' | 'error'
+  error?: string
+}
+
 /** 搜索参数 */
 export interface SearchParams {
   q: string
@@ -203,6 +234,13 @@ export interface AiSearchResult {
   author: string
   match_reason: string
   score: number
+}
+
+/** AI 全网搜索题材推荐结果项 */
+export interface AiRecommendResult {
+  title: string
+  author: string
+  reason: string
 }
 
 /** 排行榜源站信息 */
