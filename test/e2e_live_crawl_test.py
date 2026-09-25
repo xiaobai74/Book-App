@@ -18,7 +18,7 @@ import httpx
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 BASE = "http://127.0.0.1:8000/api/v1"
-SOURCE_URL = "http://www.xbiqugu.la/120/120345/"  # 真实源站目录页（香书小说，约152章）
+SOURCE_URL = "http://www.ibiqugu.net/120/120345/"  # 真实源站目录页（香书小说，约152章）
 
 results = []
 

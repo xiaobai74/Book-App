@@ -8,7 +8,7 @@ import 'element-plus/dist/index.css'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 
 import App from './App.vue'
-import router from './router'
+import router, { installRoutePreload } from './router'
 import './styles/global.css'
 
 const app = createApp(App)
@@ -22,3 +22,6 @@ app.use(createPinia())
 app.use(router)
 app.use(ElementPlus, { size: 'default' })
 app.mount('#app')
+
+// v2.7 阶段4：hover/pointerdown 预取路由 chunk，页面切换零等待
+installRoutePreload()

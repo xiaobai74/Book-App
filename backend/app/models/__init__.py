@@ -6,5 +6,6 @@ from app.models.refresh_token import RefreshToken
 from app.models.chapter import Chapter
 from app.models.crawl_source import CrawlSource
 from app.models.reading_progress import ReadingProgress
+from app.models.ranking_cache import RankingCache
 
-__all__ = ["User", "Book", "RefreshToken", "Chapter", "CrawlSource", "ReadingProgress"]
+__all__ = ["User", "Book", "RefreshToken", "Chapter", "CrawlSource", "ReadingProgress", "RankingCache"]

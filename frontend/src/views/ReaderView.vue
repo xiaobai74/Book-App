@@ -2,9 +2,13 @@
      小说管理App · 在线阅读器页面 (v1.2 新增)
      v1.6 — 边爬边看：抓取中可进入阅读；未就绪章节显示等待态，
            章节就绪后 SSE 自动加载；目录合并展示待抓取章节
+     v2.6.2 — 会话级章节缓存 + 相邻章节预取：已抓取章节翻章秒开
+           不再重复请求；重新抓取开始时自动清空本书缓存
+     v2.6.3 — 三级取数（内存→IndexedDB→网络）+ 预取窗口扩大 +
+           加载态 120ms 防闪：刷新后重进、目录跳读同样零等待
      ═══════════════════════════════════════════════════════════════ -->
 <template>
-  <div class="reader-root" :class="{ 'night-mode': isNightMode }">
+  <div class="reader-root" :class="{ 'night-mode': isNightMode, 'chrome-collapsed': !chromeVisible }">
     <!-- 顶部导航栏 -->
     <header class="reader-header">
       <div class="reader-header-left">
@@ -49,7 +53,7 @@
     </header>
 
     <!-- 正文区域 -->
-    <main class="reader-body" :style="{ fontSize: fontSizePx + 'px', lineHeight: lineHeight }">
+    <main class="reader-body" :style="{ fontSize: fontSizePx + 'px', lineHeight: lineHeight }" @click="onBodyTap">
       <div v-if="loading" class="reader-loading">
         <div class="loading-bar"></div>
         <p style="margin-top:12px;color:var(--muted)">加载章节内容…</p>
@@ -90,23 +94,34 @@
       ></button>
     </main>
 
-    <!-- 底部导航栏 -->
+    <!-- 底部导航栏（v2.6.4 移动端：翻章行 + 功能图标行双行布局） -->
     <footer class="reader-footer">
-      <el-button
-        :disabled="currentIndex <= 1"
-        @click="prevChapter"
-      >
-        ← 上一章
-      </el-button>
-      <span class="reader-progress">
-        {{ currentIndex }} / {{ effectiveTotal || '?' }}
-      </span>
-      <el-button
-        :disabled="currentIndex >= effectiveTotal"
-        @click="nextChapter"
-      >
-        下一章 →
-      </el-button>
+      <!-- 行①：翻章 + 文本进度（保留文本进度，不引入滑杆） -->
+      <div class="reader-footer-chapter">
+        <el-button
+          :disabled="currentIndex <= 1"
+          @click="prevChapter"
+        >
+          ← 上一章
+        </el-button>
+        <span class="reader-progress">
+          {{ currentIndex }} / {{ effectiveTotal || '?' }}
+        </span>
+        <el-button
+          :disabled="currentIndex >= effectiveTotal"
+          @click="nextChapter"
+        >
+          下一章 →
+        </el-button>
+      </div>
+      <!-- 行②：移动端专属功能图标行（目录 / 日夜 / 设置；设置承接字号与行距） -->
+      <div class="reader-footer-tools">
+        <button type="button" class="footer-tool-btn" @click="toggleToc">目录</button>
+        <button type="button" class="footer-tool-btn" @click="toggleNightMode">
+          {{ isNightMode ? '日间' : '夜间' }}
+        </button>
+        <button type="button" class="footer-tool-btn" @click="openSettings">设置</button>
+      </div>
     </footer>
 
     <!-- 目录侧边抽屉（v1.5：小屏宽度贴屏） -->
@@ -135,6 +150,17 @@
         </div>
       </div>
     </el-drawer>
+
+    <!-- 设置底部弹层（移动端：承接顶栏右区的字号 / 行距控件） -->
+    <ReaderSettingsSheet
+      :visible="settingsVisible"
+      :font-size="fontSize"
+      :line-height="lineHeightOption"
+      :night-mode="isNightMode"
+      @close="settingsVisible = false"
+      @select-font-size="handleFontSize"
+      @select-line-height="handleLineHeight"
+    />
   </div>
 </template>
 
@@ -142,10 +168,12 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { getChapterContent, getChapters, updateReadingProgress, getReadingProgress, getCrawlStatus, subscribeCrawlStream } from '@/api/books'
+import { getChapters, updateReadingProgress, getReadingProgress, getCrawlStatus, subscribeCrawlStream } from '@/api/books'
 import { recordRecentBook } from '@/utils/recentBooks'
+import { getCachedChapter, setCachedChapter, clearBookCache, getChapterStored, prefetchChapters, fetchChapterOnce, cacheEpoch } from '@/utils/chapterCache'
 import { escapeHtml } from '@/utils'
 import type { ChapterSummary, ChapterDetail, CrawlStreamEvent } from '@/types'
+import ReaderSettingsSheet from '@/components/ReaderSettingsSheet.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -243,11 +271,46 @@ function toggleNightMode() {
   localStorage.setItem('reader_nightMode', String(isNightMode.value))
 }
 
+// ─── 移动端导航折叠与设置弹层（v2.6.4） ────────────
+/** 移动端断点与项目惯例一致（global.css @media max-width: 640px） */
+const mobileQuery = window.matchMedia('(max-width: 640px)')
+const isMobile = ref(mobileQuery.matches)
+/** 顶/底栏可见性：移动端默认收起、点正文切换；桌面端常显 */
+const chromeVisible = ref(!mobileQuery.matches)
+/** 设置弹层可见性（移动端字号 / 行距控件下沉至此） */
+const settingsVisible = ref(false)
+
+/** 断点切换时同步移动端状态：桌面恢复常显，移动恢复收起；
+    离开移动端时关闭设置弹层（桌面端不使用底部弹层） */
+function onMobileQueryChange(e: MediaQueryListEvent) {
+  isMobile.value = e.matches
+  chromeVisible.value = !e.matches
+  if (!e.matches) settingsVisible.value = false
+}
+
+/** 点正文切换顶/底栏可见性（仅移动端），守卫顺序：
+    非移动端直接返回 → 划选文本中直接返回（防误触） →
+    点击命中按钮 / 链接直接返回（翻页热区 / 重试 / 返回最新等均豁免） */
+function onBodyTap(e: MouseEvent) {
+  if (!isMobile.value) return
+  if (window.getSelection()?.toString()) return
+  const target = e.target as HTMLElement
+  if (target.closest('button, a')) return
+  chromeVisible.value = !chromeVisible.value
+}
+
+/** 打开设置弹层：与目录抽屉互斥，先关抽屉避免层叠 */
+function openSettings() {
+  tocVisible.value = false
+  settingsVisible.value = true
+}
+
 // ─── 目录 ────────────────────────────────────
 const tocVisible = ref(false)
 const tocLoading = ref(false)
 
 function toggleToc() {
+  settingsVisible.value = false  // 与 openSettings 对称互斥（防御性加固）
   tocVisible.value = !tocVisible.value
   if (tocVisible.value && chapters.value.length === 0) {
     loadToc()
@@ -287,38 +350,134 @@ const renderedContent = computed(() => {
 
 // 请求序号：快速翻章时丢弃过期响应，防止旧章节内容覆盖新章节
 let fetchSeq = 0
+/** 延迟显示加载态定时器：120ms 内就绪则不显示，防缓存命中闪烁（v2.6.3） */
+let loadingDelayTimer: ReturnType<typeof setTimeout> | null = null
+/** 抓取状态是否已确认：首屏与抓取状态并发，未确认前不抢先报「加载失败」（v2.6.3） */
+const crawlStateKnown = ref(false)
+/** 挂起的「章节不可用」判定，待抓取状态到达后结算为等待态或错误态 */
+let deferredUnavailable: { index: number; message: string } | null = null
+
+function cancelLoadingDelay() {
+  if (loadingDelayTimer) {
+    clearTimeout(loadingDelayTimer)
+    loadingDelayTimer = null
+  }
+}
+
+/** 渲染成功后的统一收尾：进度上报、滚顶、预取邻域（v2.6.3） */
+function applyChapter(detail: ChapterDetail, index: number) {
+  chapter.value = detail
+  updateReadingProgress(bookId.value, index).catch(() => {})
+  window.scrollTo({ top: 0, behavior: 'auto' })
+  prefetchAround(index)
+}
+
+/** 预取窗口：立即段 [N-1, N+3]，空闲段扩到 N+10（v2.7 阶段3，连续快速翻章不触网）；
+ *  抓取中仅预取目录已存在章节，避免无效请求 */
+let widePrefetchIdleHandle: number | null = null
+const WIDE_PREFETCH_AHEAD = 10
+
+function prefetchAround(index: number) {
+  const cap = crawling.value ? chapters.value.length : effectiveTotal.value
+  const near = [index - 1, index + 1, index + 2, index + 3].filter(n => n >= 1 && n <= cap)
+  if (near.length > 0) prefetchChapters(bookId.value, near)
+
+  // 翻章即作废上一轮未跑完的空闲宽预取，避免过期队列挤占带宽
+  if (widePrefetchIdleHandle !== null) {
+    if (typeof cancelIdleCallback === 'function') cancelIdleCallback(widePrefetchIdleHandle)
+    widePrefetchIdleHandle = null
+  }
+  const far = Array.from({ length: WIDE_PREFETCH_AHEAD - 3 }, (_, i) => index + 4 + i)
+    .filter(n => n >= 1 && n <= cap)
+  if (far.length === 0) return
+  const run = () => {
+    widePrefetchIdleHandle = null
+    prefetchChapters(bookId.value, far)
+  }
+  if (typeof requestIdleCallback === 'function') {
+    widePrefetchIdleHandle = requestIdleCallback(run, { timeout: 8000 })
+  } else {
+    widePrefetchIdleHandle = setTimeout(run, 3000) as unknown as number
+  }
+}
+
+/** 章节不可用判定：抓取状态未确认时先挂起（保持加载态），避免误报失败 */
+function showChapterUnavailable(index: number, message: string) {
+  if (!crawlStateKnown.value) {
+    deferredUnavailable = { index, message }
+    loading.value = true
+    return
+  }
+  if (crawling.value && index <= effectiveTotal.value) {
+    // 边爬边看：章节在抓取计划中但尚未就绪 → 等待态
+    waitingForCrawl.value = true
+  } else {
+    errorMsg.value = message
+  }
+}
+
+/** 抓取状态到达后结算挂起判定 */
+function resolveDeferredUnavailable() {
+  const pending = deferredUnavailable
+  deferredUnavailable = null
+  if (!pending || pending.index !== currentIndex.value) return
+  loading.value = false
+  showChapterUnavailable(pending.index, pending.message)
+}
 
 async function fetchChapter() {
   const seq = ++fetchSeq
   const index = currentIndex.value
-  loading.value = true
   errorMsg.value = null
   waitingForCrawl.value = false
+
+  // ① 内存命中：同步秒开，不显示加载态、不发请求（v2.6.2）
+  const mem = getCachedChapter(bookId.value, index)
+  if (mem) {
+    loading.value = false
+    applyChapter(mem, index)
+    return
+  }
+
+  // ②/③ 持久层与网络取数：120ms 内就绪则不显示加载态（防闪，v2.6.3）
+  loading.value = false
+  cancelLoadingDelay()
+  loadingDelayTimer = setTimeout(() => {
+    if (seq === fetchSeq) loading.value = true
+  }, 120)
+
   try {
-    const { data } = await getChapterContent(bookId.value, index)
+    // ② 持久缓存命中：毫秒级秒开，跨会话零网络请求（v2.6.3）
+    const stored = await getChapterStored(bookId.value, index)
+    if (seq !== fetchSeq) {
+      cancelLoadingDelay()
+      return
+    }
+    if (stored) {
+      cancelLoadingDelay()
+      applyChapter(stored, index)
+      return
+    }
+    // ③ 网络拉取（与预取共享在飞行请求，同章不重复发）
+    // 发起前捕获缓存代号：若期间重新抓取清了缓存，本次结果不再写回，避免旧正文残留
+    const epoch = cacheEpoch(bookId.value)
+    const { data } = await fetchChapterOnce(bookId.value, index)
+    cancelLoadingDelay()
     if (seq !== fetchSeq) return  // 已有更新的请求，丢弃过期响应
     if (data.success && data.data) {
-      chapter.value = data.data
-      // 更新进度
-      updateReadingProgress(bookId.value, index).catch(() => {})
-      // 滚动到顶部
-      window.scrollTo({ top: 0, behavior: 'auto' })
-    } else if (crawling.value && index <= effectiveTotal.value) {
-      // 边爬边看：章节在抓取计划中但尚未就绪 → 等待态
-      waitingForCrawl.value = true
+      setCachedChapter(bookId.value, index, data.data, epoch)
+      applyChapter(data.data, index)
     } else {
-      errorMsg.value = data.error || '章节加载失败'
+      showChapterUnavailable(index, data.error || '章节加载失败')
     }
   } catch (err: any) {
+    cancelLoadingDelay()
     if (seq !== fetchSeq) return
-    if (crawling.value && index <= effectiveTotal.value) {
-      // 边爬边看：404 = 章节尚未写库，进入等待态而非报错
-      waitingForCrawl.value = true
-    } else {
-      errorMsg.value = err?.response?.data?.error || err.message || '章节加载失败'
-    }
+    // 边爬边看：404 = 章节尚未写库，由判定函数决定等待态还是报错
+    showChapterUnavailable(index, err?.response?.data?.error || err.message || '章节加载失败')
   } finally {
-    if (seq === fetchSeq) {
+    // 挂起判定期间保持加载态，待抓取状态到达后结算
+    if (seq === fetchSeq && !deferredUnavailable) {
       loading.value = false
     }
   }
@@ -399,6 +558,8 @@ function handleCrawlEvent(ev: CrawlStreamEvent) {
         return
       }
       crawling.value = true
+      // 抓取可能重写章节：清空本书缓存，防止读到旧版内容（v2.6.2）
+      clearBookCache(bookId.value)
       crawlCurrent.value = ev.current ?? 0
       crawlTotal.value = ev.total ?? 0
       if (ev.plan?.length) planTitles.value = ev.plan
@@ -406,6 +567,7 @@ function handleCrawlEvent(ev: CrawlStreamEvent) {
     case 'plan':
       crawlTotal.value = ev.total ?? 0
       planTitles.value = ev.plan ?? []
+      clearBookCache(bookId.value)
       break
     case 'chapter_ready': {
       crawlCurrent.value = ev.current ?? crawlCurrent.value
@@ -475,15 +637,8 @@ function handleKeyDown(e: KeyboardEvent) {
   else if (e.key === 'ArrowRight') nextChapter()
 }
 
-onMounted(async () => {
-  // 记录最近阅读（供 Ctrl+K 命令面板"最近阅读"入口使用）
-  recordRecentBook(bookId.value)
-  // 先获取章节列表以确定总数（修复：统一走 loadToc，避免两处重复请求）
-  try {
-    await loadToc()
-  } catch { /* 不影响阅读 */ }
-
-  // 边爬边看 v1.4：书籍抓取中时订阅实时推送
+/** 加载抓取状态：抓取中则订阅实时推送（边爬边看 v1.4） */
+async function loadCrawlState() {
   try {
     const { data } = await getCrawlStatus(bookId.value)
     if (data.success && data.data && data.data.status === 'crawling') {
@@ -493,8 +648,17 @@ onMounted(async () => {
       startCrawlWatch()
     }
   } catch { /* 不影响阅读 */ }
+}
 
-  // 若未指定章节号，尝试恢复上次进度
+onMounted(async () => {
+  // 记录最近阅读（供 Ctrl+K 命令面板"最近阅读"入口使用）
+  recordRecentBook(bookId.value)
+
+  // 断点监听同步注册（置于任何 await 之前）：保证组件提前卸载时
+  // onUnmounted 能配对移除，避免监听器泄漏持有已销毁组件的 ref
+  mobileQuery.addEventListener('change', onMobileQueryChange)
+
+  // 若未指定章节号，先恢复上次进度（需先知道读哪一章）
   if (!route.params.chapterIndex || Number(route.params.chapterIndex) < 1) {
     try {
       const { data: progData } = await getReadingProgress(bookId.value)
@@ -505,13 +669,27 @@ onMounted(async () => {
     } catch { /* 使用默认值 */ }
   }
 
+  // 正文优先：立即取数（内存/持久层命中即秒开），
+  // 不被目录列表与抓取状态两个慢接口阻塞（v2.6.3）
   fetchChapter()
   window.addEventListener('keydown', handleKeyDown)
+
+  // 目录与抓取状态并发加载；到达后结算挂起判定并按真实总数补一次预取
+  await Promise.allSettled([loadToc(), loadCrawlState()])
+  crawlStateKnown.value = true
+  resolveDeferredUnavailable()
+  if (chapter.value) prefetchAround(currentIndex.value)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown)
+  mobileQuery.removeEventListener('change', onMobileQueryChange)
   stopCrawlWatch()
+  if (widePrefetchIdleHandle !== null) {
+    if (typeof cancelIdleCallback === 'function') cancelIdleCallback(widePrefetchIdleHandle)
+    else clearTimeout(widePrefetchIdleHandle)
+    widePrefetchIdleHandle = null
+  }
 })
 
 // 监听路由参数变化（浏览器前进/后退、手动修改 URL 时）。
@@ -640,6 +818,10 @@ watch(() => route.params.chapterIndex, (newVal) => {
 .reader-text :deep(p) {
   margin: 0 0 1.2em 0;
   text-indent: 2em;
+  /* v2.7 阶段3：视口外段落跳过布局/绘制，大章上屏与快速滚动不再产生长任务；
+     auto 关键字让浏览器记住段落实际高度，未渲染时占位不跳滚动条 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 1.8em;
 }
 
 /* ── 底部导航栏 ──────────────────────────────────── */
@@ -664,6 +846,32 @@ watch(() => route.params.chapterIndex, (newVal) => {
 
 .night-mode .reader-progress {
   color: var(--muted);
+}
+
+/* ── 底部导航栏双行布局（v2.6.4 移动端） ── */
+/* 行① 翻章行：桌面端为唯一一行，三子布局与现状一致 */
+.reader-footer-chapter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+/* 行② 功能图标行：桌面端隐藏（控件仍在顶栏右区） */
+.reader-footer-tools {
+  display: none;
+}
+
+/* 功能图标按钮：透明底无边框、继承栏文字色、触控友好 */
+.footer-tool-btn {
+  flex: 1;
+  min-height: 44px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* ── 目录 ──────────────────────────────────── */
@@ -792,6 +1000,27 @@ watch(() => route.params.chapterIndex, (newVal) => {
 
   /* 触控翻页热区 */
   .tap-zone { display: block; }
+
+  /* 顶栏右区（目录 / 日夜 / 字号 / 行距）全部下沉至底栏图标行 */
+  .reader-header-right { display: none; }
+
+  /* 底栏双行：翻章行 + 功能图标行 */
+  .reader-footer {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .reader-footer-tools {
+    display: flex;
+    width: 100%;
+    justify-content: space-around;
+    gap: 8px;
+  }
+
+  /* 顶/底栏折叠（仅移动端生效）：点正文切换，即时显隐无动画 */
+  .chrome-collapsed .reader-header,
+  .chrome-collapsed .reader-footer {
+    display: none;
+  }
 
   /* 目录条目触控友好 */
   .toc-item {

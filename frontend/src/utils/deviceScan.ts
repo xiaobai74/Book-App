@@ -6,6 +6,7 @@
    Web/桌面端通过动态 import 隔离，不会执行本模块。
    ═══════════════════════════════════════════════════════ */
 import { Filesystem, Directory } from '@capacitor/filesystem'
+import { registerPlugin } from '@capacitor/core'
 import type { ScannedFile } from '@/types'
 
 /** 视为小说文件的扩展名 */
@@ -44,15 +45,54 @@ function extOf(name: string): string {
   return i >= 0 ? name.slice(i).toLowerCase() : ''
 }
 
+/** MainActivity 内联原生插件：弥补 Filesystem 在 Android 11+ 的权限失真 */
+const AppSettings = registerPlugin<{
+  hasAllFilesAccess(): Promise<{ granted: boolean }>
+  openAllFilesAccessSettings(): Promise<void>
+}>('AppSettings')
+
+/**
+ * 真实的「所有文件访问」状态（Android 11+ 用 Environment.isExternalStorageManager）。
+ * 注意：Filesystem.checkPermissions 在 Android 13+ 恒返回 granted、在 11/12 上
+ * READ_EXTERNAL_STORAGE 也不能直读公共目录，均不可信。
+ * 插件不可用（旧 APK/非原生）时回退 Filesystem 语义。
+ */
+export async function hasAllFilesAccess(): Promise<boolean> {
+  try {
+    return (await AppSettings.hasAllFilesAccess()).granted
+  } catch {
+    const status = await Filesystem.checkPermissions()
+    return status.publicStorage === 'granted'
+  }
+}
+
 /** 检查并申请存储权限，返回是否已授权 */
 export async function ensurePermissions(): Promise<boolean> {
+  // Android 11+：MANAGE_EXTERNAL_STORAGE 无法弹窗授予，只能查真实状态，
+  // 未授权时由调用方展示「去系统设置开启」引导
+  if (await hasAllFilesAccess()) return true
   try {
-    let status = await Filesystem.checkPermissions()
+    // Android ≤10：常规运行时权限弹窗可申请
+    const status = await Filesystem.requestPermissions()
     if (status.publicStorage === 'granted') return true
-    status = await Filesystem.requestPermissions()
-    return status.publicStorage === 'granted'
   } catch {
-    return false
+    // 忽略，继续走原生真实状态判断
+  }
+  return hasAllFilesAccess()
+}
+
+/**
+ * 跳转系统「所有文件访问」设置页。
+ * Android 11+ 的 MANAGE_EXTERNAL_STORAGE 无法通过 requestPermissions() 弹窗授予，
+ * 只能引导用户到系统设置手动开启。由 MainActivity 内联的 AppSettings 原生插件
+ * 显式 startActivity（Capacitor 8 的 launchIntent 不解析 intent:// URI，
+ * 纯 JS 方案会被静默吞掉）；插件不可用时静默忽略。
+ */
+export async function openAllFilesAccessSettings(): Promise<void> {
+  try {
+    await AppSettings.openAllFilesAccessSettings()
+  } catch {
+    // 非原生环境或旧 APK 无此插件：保持原有「去系统设置手动开启」文案引导
   }
 }
 

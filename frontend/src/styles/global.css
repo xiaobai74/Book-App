@@ -733,9 +733,8 @@ html[data-bg-tone='dark'] {
   margin-top: 20px;
 }
 
-@media (max-width: 768px) {
-  .detail-header { flex-direction: column; }
-}
+/* 详情页封面/信息排列与移动端适配由 BookDetailView.vue scoped 样式控制，
+   以保证「封面左 / 信息右 / 按钮下」的新布局在移动端同样生效。 */
 
 /* ─── Chapter List ─────────────────────────────────── */
 .chapter-row {
@@ -983,4 +982,14 @@ html[data-bg-tone='dark'] {
   #app-main.has-tabbar {
     padding-bottom: calc(56px + env(safe-area-inset-bottom));
   }
+}
+
+/* ─── Element Plus MessageBox 层级修正 ───────────────────
+   BookActionSheet 底部弹层 .sheet-mask 使用 z-index:3000，
+   而 ElMessageBox 默认 overlay z-index 由 PopupManager 从 2000 起分配，
+   导致在长按弹层内触发的确认框被 sheet 遮挡。这里统一抬升到 4000，
+   保证任何 MessageBox 都位于其他弹层之上。 */
+.el-overlay.is-message-box,
+.el-overlay-message-box {
+  z-index: 4000 !important;
 }

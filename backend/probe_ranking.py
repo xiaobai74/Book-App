@@ -22,7 +22,7 @@ def fetch(url):
 import sys, io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-html = fetch("http://www.xbiqugu.la/paihangbang/")
+html = fetch("http://www.ibiqugu.net/paihangbang/")
 soup = BeautifulSoup(html, "html.parser")
 
 print("\n=== 页面标题/板块标题 ===")

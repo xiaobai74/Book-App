@@ -93,6 +93,7 @@
                 class="book-card pressable"
                 role="link"
                 tabindex="0"
+                :data-preload-route="`/detail/${book.id}`"
                 :aria-label="`《${book.title}》，点击查看详情，长按打开操作面板`"
                 @pointerdown="onPressStart($event, book)"
                 @pointermove="onPressMove"
@@ -102,17 +103,26 @@
                 @contextmenu.prevent="openSheet(book)"
                 @keyup.enter="goDetail(book)"
               >
-                <div class="book-card-main" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
-                  <div class="book-card-left" style="display:flex;align-items:flex-start;gap:16px;min-width:0">
+                <div class="book-card-main">
+                  <div class="book-card-left">
                     <div class="shelf-cover">
                       <BookCover :title="book.title" :author="book.author" :cover-src="getCoverUrl(book.id, book.has_cover)" />
                     </div>
-                    <div class="book-card-info" style="min-width:0">
+                    <div class="book-card-info">
                       <div class="book-title">{{ book.title }}</div>
                       <div class="book-author">{{ book.author }}</div>
+                      <p v-if="book.description" class="book-desc">{{ book.description }}</p>
+                      <!-- 元信息行移入左列：阅读按钮独占右列，相对整卡垂直居中 -->
+                      <div class="book-meta-row">
+                        <span>{{ formatDate(book.added_at) }}</span>
+                        <StatusBadge :status="book.status" />
+                        <span>{{ book.chapter_count }} 章</span>
+                        <span v-if="book.has_epub" style="color:var(--accent-ice)">.epub 可下载</span>
+                        <span v-if="book.has_txt" style="color:var(--muted)">.txt</span>
+                      </div>
                     </div>
                   </div>
-                  <div class="book-card-actions" style="display:flex;align-items:center;gap:10px">
+                  <div class="book-card-actions">
                     <!-- v1.2: 阅读按钮（v1.6：填充样式 + 图标 + 圆角） -->
                     <el-button
                       v-if="book.chapter_count > 0"
@@ -120,18 +130,12 @@
                       type="primary"
                       round
                       :icon="Reading"
+                      :data-preload-route="`/reader/${book.id}/1`"
                       @click.stop="goRead(book)"
                     >
                       阅读
                     </el-button>
                   </div>
-                </div>
-                <div class="book-meta-row">
-                  <span>{{ formatDate(book.added_at) }}</span>
-                  <StatusBadge :status="book.status" />
-                  <span>{{ book.chapter_count }} 章</span>
-                  <span v-if="book.has_epub" style="color:var(--accent-ice)">.epub 可下载</span>
-                  <span v-if="book.has_txt" style="color:var(--muted)">.txt</span>
                 </div>
               </div>
             </div>
@@ -143,6 +147,7 @@
                 class="grid-item pressable"
                 role="link"
                 tabindex="0"
+                :data-preload-route="`/detail/${book.id}`"
                 :aria-label="`《${book.title}》，点击查看详情，长按打开操作面板`"
                 @pointerdown="onPressStart($event, book)"
                 @pointermove="onPressMove"
@@ -170,7 +175,7 @@
     </footer>
 
     <!-- 添加书籍对话框（v1.5：去掉固定宽度，全局小屏规则自适应） -->
-    <el-dialog v-model="showAddDialog" title="添加小说" @opened="resetAddForm">
+    <el-dialog v-model="showAddDialog" title="添加小说" append-to-body @opened="resetAddForm">
       <el-form ref="addFormRef" :model="addForm" :rules="addRules" label-position="top" @submit.prevent="handleAddBook">
         <el-form-item label="书名" prop="title">
           <el-input v-model="addForm.title" placeholder="请输入书名" />
@@ -220,7 +225,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onActivated, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Plus, Reading, Grid, List, ArrowDown } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -234,6 +239,9 @@ import BookCover from '@/components/BookCover.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import BookActionSheet from '@/components/BookActionSheet.vue'
 import ImportBookDialog from '@/components/ImportBookDialog.vue'
+
+// keep-alive include 匹配所需（v2.7：Tab 页缓存）
+defineOptions({ name: 'ShelfView' })
 
 const booksStore = useBooksStore()
 const router = useRouter()
@@ -252,11 +260,18 @@ const displayBooks = computed<Book[]>(() => {
   return booksStore.isClientMode ? booksStore.allBooks : booksStore.books
 })
 
-onMounted(() => {
-  // v2.2: 缓存优先加载——首次进入才发请求，切页返回瞬间恢复；
-  // 超过 60s 未刷新时自动后台静默更新，不阻断展示
+/**
+ * v2.2: 缓存优先加载——首次进入才发请求，切页返回瞬间恢复；
+ * 超过 60s 未刷新时自动后台静默更新，不阻断展示。
+ * v2.7: keep-alive 缓存后，首次挂载走 onMounted，从缓存恢复走 onActivated；
+ * ensureShelf() 内部已有 60s TTL 节流，两处调用不会重复请求。
+ */
+function loadShelf() {
   booksStore.ensureShelf()
-})
+}
+
+onMounted(loadShelf)
+onActivated(loadShelf)
 
 /** 应用当前筛选标签（不含搜索关键词；v1.9 搜索已合并至主搜索框） */
 function applyCurrentFilter() {
@@ -474,6 +489,35 @@ async function handleAddBook() {
   font-weight: 500;
 }
 
+/* ── 列表卡片：单行两列布局，阅读按钮固定右侧垂直居中 ── */
+.book-card-main {
+  display: flex;
+  align-items: center;      /* 右列按钮相对整卡垂直居中 */
+  flex-wrap: nowrap;        /* 简介再长也不把按钮挤到下一行 */
+  gap: 16px;
+}
+.book-card-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  flex: 1;
+  min-width: 0;
+}
+.book-card-info {
+  min-width: 0;
+  flex: 1;
+}
+.book-card-actions {
+  flex-shrink: 0;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.book-card-info .book-meta-row {
+  margin-top: 8px;
+}
+
 /* ── v2.3 长按交互：禁选中 + 按压微缩反馈 ── */
 .pressable {
   cursor: pointer;
@@ -536,6 +580,17 @@ async function handleAddBook() {
   text-overflow: ellipsis;
 }
 
+.book-desc {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* ── v1.5 移动端适配 ────────────────────────────── */
 @media (max-width: 640px) {
   /* 筛选标签整行横向滚动 */
@@ -585,13 +640,23 @@ async function handleAddBook() {
     line-height: 1.35;
   }
 
-  /* 操作按钮压缩内边距，保证卡片一行放下 */
+  /* 操作按钮压缩内边距，固定右列不换行 */
+  .book-card-main {
+    gap: 10px;
+  }
   .book-card-actions {
+    flex-shrink: 0;
     gap: 6px;
   }
   .book-card-actions :deep(.el-button) {
     padding: 6px 10px;
     margin: 0;
+  }
+
+  .book-desc {
+    font-size: 11px;
+    -webkit-line-clamp: 2;
+    margin-top: 4px;
   }
 
   .book-meta-row {

@@ -17,7 +17,7 @@ from app.services.crawler_service import CrawlerService
 
 # Real book URLs tested against each source
 TESTS = [
-    ("xiangshu",        "http://www.xbiqugu.la/",        "http://www.xbiqugu.la/120/120345/"),
+    ("xiangshu",        "http://www.ibiqugu.net/",        "http://www.ibiqugu.net/120/120345/"),
     ("shuhaige",        "https://www.shuhaige.net/",      "https://www.shuhaige.net/book/20024/"),
     ("mcxs",            "http://www.mcxs.info/",          "http://www.mcxs.info/book/10001/"),
     ("xbiquwk",         "http://www.xbiquwk.com/",        "http://www.xbiquwk.com/120/120345/"),

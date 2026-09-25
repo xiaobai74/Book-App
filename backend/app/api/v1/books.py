@@ -37,12 +37,14 @@ import json
 import logging
 import os
 import tempfile
+from datetime import datetime
 from math import ceil
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -93,6 +95,43 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
+# HTTP 缓存辅助（ETag / If-None-Match / 304）
+# ============================================================
+
+def _safe_ts(dt: datetime | None) -> int:
+    """将 datetime 转为 POSIX 时间戳（秒）用于 ETag；None 或异常时返回 0。
+
+    兼容 MySQL / SQLite：两者返回的均为 naive datetime，.timestamp() 按本地时区解释，
+    对同一条记录稳定一致，适合作缓存校验标识（无需跨机器可比）。
+    """
+    if dt is None:
+        return 0
+    try:
+        return int(dt.timestamp())
+    except Exception:  # noqa: BLE001 时间戳转换失败不应阻断主流程
+        return 0
+
+
+def _etag_matches(if_none_match: str | None, etag: str) -> bool:
+    """判断 If-None-Match 请求头是否命中给定 ETag。
+
+    支持逗号分隔的多候选值与通配符 *；比较时忽略弱校验前缀 W/，
+    使强/弱 ETag 均可命中（客户端通常原样回传服务端下发的 ETag）。
+    """
+    if not if_none_match:
+        return False
+    if if_none_match.strip() == "*":
+        return True
+
+    def _norm(v: str) -> str:
+        v = v.strip()
+        return v[2:] if v.startswith("W/") else v
+
+    target = _norm(etag)
+    return any(_norm(c) == target for c in if_none_match.split(","))
+
+
+# ============================================================
 # 书架 CRUD
 # ============================================================
 
@@ -102,19 +141,34 @@ logger = logging.getLogger(__name__)
     summary="获取书架列表",
 )
 async def list_books(
+    request: Request,
     page: int = Query(default=1, ge=1, description="页码"),
     page_size: int = Query(default=20, ge=1, le=500, description="每页数量"),
     marked: bool | None = Query(default=None, description="筛选：仅已标记/全部"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取当前用户的书架列表，已标记书籍置顶，支持按标记筛选"""
+    """获取当前用户的书架列表，已标记书籍置顶，支持按标记筛选。
+
+    返回弱 ETag（总数 + 本页最新更新时间）+ 短缓存；命中 If-None-Match 时返回 304，
+    书架无变化时避免重复传输整个列表。
+    """
     books, total = await BookService.get_books(
         db, current_user, page, page_size, filter_marked=marked,
     )
-    items = [book_to_response(b) for b in books]
 
-    return ApiResponse.ok(
+    # 弱 ETag：总数变化或本页任一书籍更新即失效（书架通常单页，max 取本页已足够）
+    max_updated = max((_safe_ts(b.updated_at) for b in books), default=0)
+    etag = f'W/"{total}-{max_updated}"'
+    cache_headers = {
+        "Cache-Control": "private, max-age=60",
+        "ETag": etag,
+    }
+    if _etag_matches(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=cache_headers)
+
+    items = [book_to_response(b) for b in books]
+    body = ApiResponse.ok(
         data=items,
         meta=PaginationMeta(
             page=page,
@@ -123,6 +177,7 @@ async def list_books(
             total_pages=ceil(total / page_size) if total > 0 else 0,
         ),
     )
+    return JSONResponse(content=jsonable_encoder(body), headers=cache_headers)
 
 
 @router.post(
@@ -305,7 +360,12 @@ async def get_book_cover(
     book = await BookService.get_book_detail(db, current_user, book_id)
     if not book.cover_path or not os.path.exists(book.cover_path):
         raise AppException(status_code=404, detail="该书籍暂无封面")
-    return FileResponse(book.cover_path, media_type=_guess_image_media_type(book.cover_path))
+    # 封面图片内容固定（以 book_id 命名、覆盖式写入），可长期强缓存
+    return FileResponse(
+        book.cover_path,
+        media_type=_guess_image_media_type(book.cover_path),
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 def _guess_image_media_type(path: str) -> str:
@@ -370,13 +430,32 @@ async def toggle_mark_book(
     summary="获取章节列表",
 )
 async def list_chapters(
+    request: Request,
     book_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取书籍的全部章节列表（按序号升序排列，不含正文内容）"""
-    chapters = await BookService.get_chapters(db, current_user, book_id)
-    return ApiResponse.ok(data=[chapter_to_response(c) for c in chapters])
+    """获取书籍的全部章节列表（按序号升序排列，不含正文内容）。
+
+    目录随书籍更新/抓取进度变化，返回短缓存 + ETag（书籍更新时间 + 章节数）；
+    命中 If-None-Match 时返回 304，边爬边看场景下可显著降低目录轮询开销。
+    """
+    # 轻量获取书籍元数据（列查询，不触发 chapters 关系的 selectin 正文加载）并校验归属
+    updated_at, chapter_count = await BookService.get_book_cache_meta(
+        db, current_user, book_id,
+    )
+    etag = f'"{_safe_ts(updated_at)}-{chapter_count}"'
+    cache_headers = {
+        "Cache-Control": "private, max-age=300",
+        "ETag": etag,
+    }
+    if _etag_matches(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=cache_headers)
+
+    # 仅查询目录元数据（load_only 排除 MEDIUMTEXT 正文），降低内存与传输开销
+    chapters = await BookService.get_chapters_list(db, book_id)
+    body = ApiResponse.ok(data=[chapter_to_response(c) for c in chapters])
+    return JSONResponse(content=jsonable_encoder(body), headers=cache_headers)
 
 
 @router.get(
@@ -385,16 +464,28 @@ async def list_chapters(
     summary="获取章节内容",
 )
 async def get_chapter_content(
+    request: Request,
     book_id: str,
     chapter_index: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取指定章节的正文内容，用于在线阅读器渲染"""
+    """获取指定章节的正文内容，用于在线阅读器渲染。
+
+    正文写入后不可变，返回 immutable 长缓存头 + ETag（章节 id + 创建时间）；
+    命中 If-None-Match 时返回 304，重读同章无需重复传输大段正文。
+    """
     chapter = await BookService.get_chapter_content(
         db, current_user, book_id, chapter_index,
     )
-    return ApiResponse.ok(data=chapter_to_detail_response(chapter))
+    cache_headers = {
+        "Cache-Control": "private, max-age=604800, immutable",
+        "ETag": f'"{chapter.id}-{_safe_ts(chapter.created_at)}"',
+    }
+    if _etag_matches(request.headers.get("if-none-match"), cache_headers["ETag"]):
+        return Response(status_code=304, headers=cache_headers)
+    body = ApiResponse.ok(data=chapter_to_detail_response(chapter))
+    return JSONResponse(content=jsonable_encoder(body), headers=cache_headers)
 
 
 @router.get(
@@ -510,6 +601,59 @@ async def search_books_external(
             total=len(items),
             total_pages=1,
         ),
+    )
+
+
+@router.get(
+    "/search/external/stream",
+    summary="外部源站搜索流式返回（SSE，v2.7 阶段1a）",
+)
+async def search_books_external_stream(
+    q: str = Query(..., min_length=1, description="搜索关键词"),
+    source_id: int | None = Query(default=None, description="指定源站ID，不传则搜索所有源站"),
+    search_limit: int = Query(default=30, ge=1, le=100, description="每个源站最大结果数"),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    以 Server-Sent Events 按源站增量推送搜索结果。
+
+    事件类型（data 均为 JSON）：
+    - meta:  {"sources":[{id,name}], "cached":bool}  本次参与的源站清单（cached=命中后端缓存）
+    - source:{"source_id","source_name","results":[SearchResultItem...]}  单源完成即推送
+    - done:  {"total":n}  合并去重后的总结果数，流结束
+
+    前端使用 fetch + ReadableStream 消费（携带 Authorization 头），
+    连接失败时回退同步端点 GET /search/external。
+    """
+
+    def _item(r) -> dict:
+        return SearchResultItem(
+            title=r.title, author=r.author, source_url=r.source_url,
+            source_name=r.source_name, source_id=r.source_id,
+            category=r.category, word_count=r.word_count, status=r.status,
+            latest_chapter=r.latest_chapter, last_update_time=r.last_update_time,
+        ).model_dump()
+
+    async def event_generator():
+        async for kind, payload in search_service.search_stream(q, source_id, search_limit):
+            if kind == "ping":
+                yield ": ping\n\n"  # 心跳注释行，防代理/浏览器空闲断连
+                continue
+            data = {"type": kind, **payload}
+            if kind == "source" and data.get("results"):
+                data["results"] = [_item(r) for r in payload["results"]]
+            else:
+                data["results"] = []
+            yield "data: " + json.dumps(data, ensure_ascii=False) + "\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲，保证结果即时下发
+            "Connection": "keep-alive",
+        },
     )
 
 

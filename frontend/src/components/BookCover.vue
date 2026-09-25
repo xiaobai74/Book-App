@@ -9,6 +9,8 @@
       :src="coverSrc!"
       :alt="`《${title}》封面`"
       loading="lazy"
+      decoding="async"
+      fetchpriority="low"
       @error="imgFailed = true"
     />
     <!-- 仅当封面抓取失败/无封面时，才显示书名+作者的渐变占位封面 -->

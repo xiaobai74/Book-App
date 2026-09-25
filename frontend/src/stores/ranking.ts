@@ -36,6 +36,9 @@ export const useRankingStore = defineStore('ranking', () => {
 
   /** 加载源站列表；已加载过则跳过，force=true（用户点击刷新）才重新请求 */
   async function loadSources(force = false) {
+    // 首次挂载时 onMounted 与 onActivated 会同帧各调一次，
+    // in-flight 防抖避免源站列表重复请求
+    if (loadingSources.value) return
     if (sourcesLoaded.value && !force) return
     loadingSources.value = true
     try {
@@ -88,6 +91,21 @@ export const useRankingStore = defineStore('ranking', () => {
     }
   }
 
+  /**
+   * 后台预取指定源站的榜单（v2.7 阶段2：进入榜单后空闲预取其余榜单）。
+   * 已缓存则跳过；失败静默（不打扰用户，用户切到该 Tab 时会走正常加载并看到错误）。
+   */
+  async function prefetchBoard(sourceId: number, boardIndex: number) {
+    const key = `${sourceId}:${boardIndex}`
+    if (boardCache.value[key]) return
+    try {
+      const res = await getRankingBoard(sourceId, boardIndex)
+      if (res.data?.data) boardCache.value[key] = res.data.data
+    } catch {
+      // 预取失败静默忽略
+    }
+  }
+
   return {
     sources,
     sourcesLoaded,
@@ -102,6 +120,7 @@ export const useRankingStore = defineStore('ranking', () => {
     loadSources,
     selectSource,
     backToSources,
-    loadBoard
+    loadBoard,
+    prefetchBoard
   }
 })

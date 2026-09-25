@@ -1,0 +1,78 @@
+{
+  "冷启动首个请求(/health)": {
+    "ms": 2036.0,
+    "budget_ms": 1000,
+    "pass": false,
+    "extra": "仅重启后首次有意义"
+  },
+  "书架列表 cold": {
+    "ms": 124.8,
+    "budget_ms": 800,
+    "pass": true,
+    "extra": "501B"
+  },
+  "书架列表 304 复用": {
+    "ms": 179.3,
+    "budget_ms": 150,
+    "pass": false,
+    "extra": "status=304"
+  },
+  "章节目录 cold": {
+    "ms": 115.7,
+    "budget_ms": 800,
+    "pass": true,
+    "extra": "136729B"
+  },
+  "章节目录 304 复用": {
+    "ms": 34.0,
+    "budget_ms": 150,
+    "pass": true,
+    "extra": "status=304"
+  },
+  "章节正文 cold": {
+    "ms": 108.5,
+    "budget_ms": 300,
+    "pass": true,
+    "extra": "2642B"
+  },
+  "章节正文 304 复用": {
+    "ms": 155.3,
+    "budget_ms": 100,
+    "pass": false,
+    "extra": "status=304"
+  },
+  "排行榜源站列表": {
+    "ms": 47.9,
+    "budget_ms": 300,
+    "pass": true,
+    "extra": "953B"
+  },
+  "榜单首次进入": {
+    "ms": 6957.0,
+    "status": 200
+  },
+  "榜单二次进入(中位x3)": {
+    "ms": 81.9,
+    "budget_ms": 300,
+    "pass": true,
+    "extra": "3637B status=200 etag=有 cache-control=private, max-age=300"
+  },
+  "全网搜索 冷启动": {
+    "ms": 1643.9,
+    "budget_ms": 8000,
+    "pass": true,
+    "extra": "33312B results=122"
+  },
+  "全网搜索 缓存命中": {
+    "ms": 123.7,
+    "budget_ms": 300,
+    "pass": true,
+    "extra": "33312B"
+  },
+  "全网搜索 冷x3 中位": {
+    "ms": 1626.3,
+    "budget_ms": 8000,
+    "pass": true,
+    "extra": "max=2556ms min=1583ms"
+  }
+}

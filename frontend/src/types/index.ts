@@ -11,6 +11,8 @@ export interface Book {
   title: string
   author: string
   source_url: string | null
+  /** 后端根据内置规则或域名推导的源站可读名称（v2.7），未匹配时为 null */
+  source_name?: string | null
   status: BookStatus
   chapter_count: number
   has_epub: boolean

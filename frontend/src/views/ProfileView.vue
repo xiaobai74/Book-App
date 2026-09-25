@@ -73,6 +73,10 @@ import ThemeSettingsDialog from '@/components/ThemeSettingsDialog.vue'
 import { useAuthStore, useShelfSearchStore } from '@/stores'
 import { useThemeStore } from '@/stores/theme'
 
+// keep-alive include 匹配所需（v2.7：Tab 页缓存）
+// 本页数据均来自响应式 store，无 onMounted 数据加载逻辑，无需 onActivated
+defineOptions({ name: 'ProfileView' })
+
 const authStore = useAuthStore()
 const themeStore = useThemeStore()
 /** AI 搜索开关（v2.0 原挂顶栏头像菜单，v2.4 迁入本页） */

@@ -21,7 +21,7 @@ async def diagnose_all():
     # Known test URLs for each source (a real book page)
     book_test_urls = {
         "https://www.biquh.com/": "https://www.biquh.com/book/123456/",
-        "http://www.xbiqugu.la/": "http://www.xbiqugu.la/120/120345/",
+        "http://www.ibiqugu.net/": "http://www.ibiqugu.net/120/120345/",
         "https://www.shuhaige.net/": "https://www.shuhaige.net/book/12345/",
         "http://www.mcxs.info/": "http://www.mcxs.info/book/12345/",
         "http://www.xbiquwk.com/": "http://www.xbiquwk.com/120/120345/",

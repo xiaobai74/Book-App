@@ -10,6 +10,7 @@
     title="从本地文件导入小说"
     :width="isMobile ? '92%' : '640px'"
     :close-on-click-modal="false"
+    append-to-body
     @update:model-value="(v: boolean) => emit('update:modelValue', v)"
     @closed="reset"
   >
@@ -57,8 +58,12 @@
         :closable="false"
         style="margin-top:12px"
         title="未获得存储权限"
-        description="请在系统设置中授予「所有文件访问」权限后重试。"
-      />
+        description="扫描设备文件需要「所有文件访问」权限（Android 11+ 只能在系统设置中手动开启）。"
+      >
+        <el-button size="small" type="warning" plain style="margin-top:8px" @click="openPermSettings">
+          去系统设置开启
+        </el-button>
+      </el-alert>
 
       <template v-if="scanned.length">
         <!-- 扩展名过滤 -->
@@ -240,6 +245,12 @@ async function startScan() {
   } finally {
     scanning.value = false
   }
+}
+
+/** 跳转系统「所有文件访问」设置页（回来后再次点扫描即可） */
+async function openPermSettings() {
+  const mod = await import('@/utils/deviceScan')
+  mod.openAllFilesAccessSettings()
 }
 
 async function addSelectedToImport() {

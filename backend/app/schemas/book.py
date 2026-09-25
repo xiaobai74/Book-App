@@ -18,6 +18,7 @@ class BookResponse(BaseModel):
     title: str
     author: str
     source_url: str | None = None
+    source_name: str | None = None
     status: str = "idle"
     chapter_count: int = 0
     has_epub: bool = False

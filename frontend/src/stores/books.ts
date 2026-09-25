@@ -11,6 +11,7 @@ import {
   deleteBook as deleteBookApi,
   searchBooks,
   searchBooksExternal,
+  searchBooksExternalStream,
   getSources,
   triggerCrawl,
   getCrawlStatus,
@@ -338,6 +339,85 @@ export const useBooksStore = defineStore('books', () => {
     }
   }
 
+  /** 进行中的流式搜索取消函数（同一时刻只保留最后一次搜索） */
+  let cancelExternalStream: (() => void) | null = null
+
+  // ── v2.7 阶段1b：全网搜索前端缓存（关键词→结果 LRU，SWR 后台刷新）──
+  const WEB_SEARCH_CACHE_MAX = 20
+  const webSearchCache = new Map<string, SearchResultItem[]>()
+
+  function readWebSearchCache(q: string): SearchResultItem[] | null {
+    const key = q.trim().toLowerCase()
+    const hit = webSearchCache.get(key)
+    if (!hit) return null
+    // LRU touch：命中项移到末尾
+    webSearchCache.delete(key)
+    webSearchCache.set(key, hit)
+    return hit
+  }
+
+  function writeWebSearchCache(q: string, results: SearchResultItem[]) {
+    const key = q.trim().toLowerCase()
+    webSearchCache.delete(key)
+    webSearchCache.set(key, [...results])
+    while (webSearchCache.size > WEB_SEARCH_CACHE_MAX) {
+      webSearchCache.delete(webSearchCache.keys().next().value as string)
+    }
+  }
+
+  /**
+   * v2.7 阶段1a+1b：流式全网搜索。
+   * - 前端缓存命中：本地结果立即上屏（<50ms），后台仍走流式刷新，完成时原子替换；
+   * - 无缓存：每个源站完成即增量渲染；
+   * - 连接失败：无缓存时回退同步 searchExternal，有缓存时静默保留旧结果；
+   * 返回 Promise 仅在全流结束时 resolve，供调用方做「记录搜索词」等收尾逻辑。
+   */
+  function searchExternalStream(q: string, search_limit = 30): Promise<SearchResultItem[]> {
+    cancelExternalStream?.()
+    externalError.value = null
+    const cached = readWebSearchCache(q)
+    externalResults.value = cached ? [...cached] : []
+    externalLoading.value = true
+    const acc: SearchResultItem[] = []
+    const seen = new Set<string>()
+    return new Promise<SearchResultItem[]>((resolve) => {
+      let settled = false
+      const finish = (result: SearchResultItem[]) => {
+        if (settled) return
+        settled = true
+        cancelExternalStream = null
+        externalLoading.value = false
+        resolve(result)
+      }
+      cancelExternalStream = searchBooksExternalStream({ q, search_limit }, (e) => {
+        if (e.type === 'source') {
+          for (const r of e.results ?? []) {
+            const key = `${r.title}_${r.author}`
+            if (seen.has(key)) continue
+            seen.add(key)
+            acc.push(r)
+          }
+          // 无缓存才逐源增量渲染；缓存命中时避免 旧结果→增量 闪烁，等完整列表原子替换
+          if (!cached) externalResults.value = [...acc]
+        } else if (e.type === 'done' || e.type === 'stream_closed') {
+          const list = acc.length ? acc : (cached ?? acc)
+          if (acc.length) writeWebSearchCache(q, acc)
+          if (cached && acc.length) externalResults.value = list
+          finish(list)
+        } else if (e.type === 'stream_error') {
+          if (cached) {
+            finish(cached)  // 后台刷新失败：保留旧缓存结果，不打扰用户
+          } else {
+            searchExternal(q, undefined, search_limit).then((r) => {
+              if (r.length) writeWebSearchCache(q, r)
+              finish(r)
+            })
+          }
+        }
+      })
+    })
+  }
+
   /** 获取可用源站列表 */
   async function fetchSources() {
     try {
@@ -418,6 +498,7 @@ export const useBooksStore = defineStore('books', () => {
     removeBook,
     search,
     searchExternal,
+    searchExternalStream,
     fetchSources,
     startCrawl,
     fetchCrawlStatus

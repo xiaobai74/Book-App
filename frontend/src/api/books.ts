@@ -109,13 +109,26 @@ export function subscribeCrawlStream(
   bookId: string,
   onEvent: (e: CrawlStreamEvent) => void,
 ): () => void {
+  return startSse(
+    `${API_BASE_URL}/books/${bookId}/crawl-stream`,
+    (obj) => onEvent(obj as CrawlStreamEvent),
+  )
+}
+
+/**
+ * 通用 SSE 消费核心：fetch + ReadableStream 逐行解析 `data:` JSON，
+ * 忽略心跳注释行。连接异常时推送 stream_error，正常收到 done 事件后关闭。
+ *
+ * @returns 取消函数（主动中断不再上报 stream_error）
+ */
+function startSse(url: string, onData: (obj: unknown) => void, onClosed?: () => void): () => void {
   const controller = new AbortController()
   let closed = false
 
   ;(async () => {
     try {
       const token = localStorage.getItem('access_token')
-      const resp = await fetch(`${API_BASE_URL}/books/${bookId}/crawl-stream`, {
+      const resp = await fetch(url, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         signal: controller.signal,
       })
@@ -136,16 +149,18 @@ export function subscribeCrawlStream(
           const trimmed = line.trim()
           if (!trimmed.startsWith('data:')) continue  // 忽略心跳注释行
           try {
-            onEvent(JSON.parse(trimmed.slice(5).trim()) as CrawlStreamEvent)
+            onData(JSON.parse(trimmed.slice(5).trim()))
           } catch {
             // 忽略单条畸形数据
           }
         }
       }
+      // 流被服务端正常关闭（未报错）
+      if (!closed) onClosed?.()
     } catch (err) {
-      // 主动取消不报错；其余异常通知调用方回退轮询
+      // 主动取消不报错；其余异常通知调用方回退
       if (!closed && (err as Error)?.name !== 'AbortError') {
-        onEvent({ type: 'stream_error' })
+        onData({ type: 'stream_error' })
       }
     }
   })()
@@ -154,6 +169,43 @@ export function subscribeCrawlStream(
     closed = true
     controller.abort()
   }
+}
+
+/** 全网搜索流式事件（v2.7 阶段1a） */
+export type ExternalSearchEvent =
+  | { type: 'meta'; sources: { id: number; name: string }[]; cached: boolean }
+  | { type: 'source'; source_id: number; source_name: string; results: SearchResultItem[] }
+  | { type: 'done'; total: number }
+  | { type: 'stream_closed' }
+  | { type: 'stream_error' }
+
+/**
+ * 流式全网搜索（SSE）：每个源站完成即推送 source 事件，结束推 done。
+ * stream_error=连接失败（调用方回退同步接口）；
+ * stream_closed=流正常关闭但未收到 done（已收结果仍可用）。
+ *
+ * @returns 取消函数（用户切换关键词/离开页面时调用）
+ */
+export function searchBooksExternalStream(
+  params: { q: string; source_id?: number; search_limit?: number },
+  onEvent: (e: ExternalSearchEvent) => void,
+): () => void {
+  const qs = new URLSearchParams({ q: params.q })
+  if (params.source_id !== undefined) qs.set('source_id', String(params.source_id))
+  if (params.search_limit !== undefined) qs.set('search_limit', String(params.search_limit))
+  let gotDone = false
+  return startSse(
+    `${API_BASE_URL}/search/external/stream?${qs.toString()}`,
+    (obj) => {
+      const e = obj as ExternalSearchEvent
+      if (e.type === 'done') gotDone = true
+      onEvent(e)
+    },
+    () => {
+      // 流关闭但未收到 done（服务端异常中断等）→ 通知调用方以已收结果收尾
+      if (!gotDone) onEvent({ type: 'stream_closed' })
+    },
+  )
 }
 
 /** 下载 EPUB/TXT（返回直接下载链接）

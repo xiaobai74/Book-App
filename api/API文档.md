@@ -1,11 +1,13 @@
 # 小说管理App — API 文档
 
-> **版本**：v1.4
+> **版本**：v1.6
 > **基础地址**：`http://localhost:8000`
 > **接口协议**：RESTful，请求/响应均为 JSON（SSE 接口除外）
 > **在线文档**：[Swagger UI](http://localhost:8000/docs) | [ReDoc](http://localhost:8000/redoc)
 > **v1.3.1**：章节排序增强（中文数字章节号 + 卷重置感知排序），见 [8.2 通用抓取规则说明](#82-通用抓取规则说明)
 > **v1.4**：边爬边看 —— 新增 SSE 实时推送接口 `GET /api/v1/books/{book_id}/crawl-stream`，章节抓取完成即增量写库可立即阅读
+> **v1.5**：新增 AI 全网题材推荐接口 `POST /api/v1/ai/recommend`；AI 摘要内容净化（剥离推理模型思维链、摘要不再含"（基于样本推断）"类推断性说明）
+> **v1.6**：流畅度优化 —— 新增全网搜索流式接口 `GET /api/v1/search/external/stream`（SSE 逐源站推送）；补录排行榜接口文档并新增 `limit` 截断参数与弱 ETag/304 条件缓存
 
 ---
 
@@ -32,12 +34,16 @@
    - [GET /api/v1/books/{book_id}/progress — 获取阅读进度](#get-apiv1booksbook_idprogress--获取阅读进度)
    - [PUT /api/v1/books/{book_id}/progress — 更新阅读进度](#put-apiv1booksbook_idprogress--更新阅读进度)
    - [POST /api/v1/ai/search — AI 语义搜索](#post-apiv1aisearch--ai-语义搜索)
+   - [POST /api/v1/ai/recommend — AI 全网题材推荐](#post-apiv1airecommend--ai-全网题材推荐)
    - [POST /api/v1/ai/summary/{book_id} — 触发 AI 摘要生成](#post-apiv1aisummarybook_id--触发-ai-摘要生成)
    - [GET /api/v1/ai/summary/{book_id} — 获取 AI 摘要](#get-apiv1aisummarybook_id--获取-ai-摘要)
 4. [搜索接口](#4-搜索接口)
    - [GET /api/v1/search — 书架内搜索](#get-apiv1search--书架内搜索)
    - [GET /api/v1/search/external — 外部源站搜索](#get-apiv1searchexternal--外部源站搜索)
    - [GET /api/v1/sources — 获取可用源站列表](#get-apiv1sources--获取可用源站列表)
+   - [GET /api/v1/search/external/stream — 外部源站搜索流式返回（SSE，v1.6）](#get-apiv1searchexternalstream--外部源站搜索流式返回ssev16)
+   - [GET /api/v1/ranking/sources — 排行榜源站列表](#get-apiv1rankingsources--排行榜源站列表)
+   - [GET /api/v1/ranking/{source_id}/boards/{board_index} — 抓取指定榜单](#get-apiv1rankingsource_idboardsboard_index--抓取指定榜单)
 5. [抓取与下载接口](#5-抓取与下载接口)
    - [POST /api/v1/crawl/check-url — 检查 URL 连通性](#post-apiv1crawlcheck-url--检查-url-连通性)
    - [POST /api/v1/books/{book_id}/crawl — 触发抓取](#post-apiv1booksbook_idcrawl--触发抓取)
@@ -871,11 +877,60 @@ Authorization: Bearer <access_token>
 
 ---
 
+### POST /api/v1/ai/recommend — AI 全网题材推荐
+
+> 🔒 **需要认证**：`Authorization: Bearer <access_token>` ｜ v2.6 新增（文档 v1.5 补录）
+
+根据用户描述的书籍类型 / 自然语言需求，由 LLM 推荐 2-3 本该题材下知名的中文网络小说，供前端全网搜索 tab 展示推荐卡片；用户选中一本后再以书名执行全网搜索。Dify 未配置或调用失败时返回空列表，前端回退为直接以原输入全网搜索。
+
+**请求**
+
+```
+POST /api/v1/ai/recommend
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{ "query": "修仙" }
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `query` | `string` | 是 | 书籍类型 / 自然语言需求描述，最长 500 字符 |
+
+**成功响应 `200`**
+
+```json
+{
+  "success": true,
+  "data": [
+    { "title": "凡人修仙传", "author": "忘语", "reason": "修仙题材现象级经典" }
+  ],
+  "meta": null,
+  "error": null
+}
+```
+
+| 返回字段 | 类型 | 说明 |
+|----------|------|------|
+| `title` | `string` | 推荐书名 |
+| `author` | `string` | 作者（缺失时为"未知"） |
+| `reason` | `string` | 一句话推荐理由 |
+
+**错误响应**
+
+| 状态码 | error 内容 |
+|--------|-----------|
+| `400` | `搜索关键词至少需要 2 个字符` |
+
+---
+
 ### POST /api/v1/ai/summary/{book_id} — 触发 AI 摘要生成
 
 > 🔒 **需要认证**：`Authorization: Bearer <access_token>` ｜ v1.3 新增
 
 启动后台任务生成书籍摘要（情节摘要 + 角色列表 + 风格标签）。生成完成后自动存储，通过 GET 接口获取。已生成过摘要的书籍直接返回现有摘要。
+
+> **摘要内容净化（v1.5）**：后端统一剥离推理型模型（DeepSeek-R1/QwQ 等）输出前置的思维链，并移除"（基于样本推断）"等推断性说明字样；摘要正文仅含【情节摘要】【主要角色】【风格标签】【阅读提示】四段正式内容。
 
 **请求**
 
@@ -920,7 +975,7 @@ Authorization: Bearer <access_token>
 
 > 🔒 **需要认证**：`Authorization: Bearer <access_token>` ｜ v1.3 新增
 
-获取书籍的 AI 摘要。已生成则直接返回；生成中则返回当前进度；从未生成过返回 `status="none"`。前端通常以 3 秒间隔轮询此接口。
+获取书籍的 AI 摘要。已生成则直接返回；生成中则返回当前进度；从未生成过返回 `status="none"`。前端通常以 3 秒间隔轮询此接口。返回的 `ai_summary` 已经后端净化，不含思维链与推断性说明字样（v1.5）。
 
 **请求**
 
@@ -1110,6 +1165,60 @@ Authorization: Bearer <access_token>
 > **注意**：本接口为非分页接口，`meta` 返回 `null`。
 
 > **通用抓取说明**：即使源站不在列表中，系统也会自动使用内置通用解析策略尝试抓取任意小说网站的 URL（详见 [8.2 通用抓取规则说明](#82-通用抓取规则说明)）。源站列表中的规则主要用于提高特定网站的抓取精确度。
+
+---
+
+### GET /api/v1/search/external/stream — 外部源站搜索流式返回（SSE，v1.6）
+
+> 🔒 **需要认证**：`Authorization: Bearer <access_token>`（经 `Authorization` 头传递）
+
+v1.6 流畅度优化（阶段1a）新增。与 `GET /api/v1/search/external` 语义相同（同参数 `q` / `source_id` / `search_limit`），但不再等待所有源站聚齐：响应为 `text/event-stream`，每个源站一有结果立即推送，全网搜索首屏等待从「全部源站完成」（冷中位约 2s）降到「首个源站完成」（通常 <1s）。
+
+**事件流格式**（每条 `data:` 为一个 JSON 对象，`type` 区分事件；另有 `: ping` 注释行心跳）
+
+| type | 载荷字段 | 说明 |
+|------|----------|------|
+| `meta` | `query`, `sources[]` | 流开始时首先推送，声明本次参与搜索的源站清单 |
+| `source` | `source_id`, `source_name`, `results[]`, `cached` | 单个源站完成，`results` 为该站去重后条目（结构同同步接口 data[]） |
+| `done` | `total`, `cached` | 全部源站完成（或达到 20s 总时限），`total` 为合并去重后总条数 |
+
+- 服务端 20 秒总截止（`STREAM_TOTAL_DEADLINE`）：到期后未完成源站不再等待，直接以已到达结果收尾。
+- 单源站 HTTP 超时收紧为 `connect 6s / 总 10s`，慢站不拖垮整体。
+- 结果仍写入与同步接口共享的 LRU+TTL 缓存（200 条 / 300s）：命中缓存时按源站分组快速回放全部事件。
+
+---
+
+### GET /api/v1/ranking/sources — 排行榜源站列表
+
+> 🔒 **需要认证**：`Authorization: Bearer <access_token>`
+
+返回配置了 `ranking.boards` 规则的源站及其榜单名称列表。
+
+```
+GET /api/v1/ranking/sources
+Authorization: Bearer <access_token>
+```
+
+**data[] 字段**：`id`、`name`、`url`、`board_names[]`（榜单名数组，索引即 `board_index`）、`is_custom`。
+
+---
+
+### GET /api/v1/ranking/{source_id}/boards/{board_index} — 抓取指定榜单
+
+> 🔒 **需要认证**：`Authorization: Bearer <access_token>`
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `source_id` | `int` | 是 | - | 路径参数，源站 ID |
+| `board_index` | `int` | 是 | - | 路径参数，榜单索引（对应 `board_names` 下标） |
+| `refresh` | `bool` | 否 | `false` | 跳过三级缓存（内存 15min → DB 1h → 抓取）强制重抓 |
+| `limit` | `int` | 否 | `200` | **v1.6 新增**：返回条目上限（1-2000），完整榜单在服务端缓存仍保留全量，仅响应截断 |
+
+**HTTP 缓存（v1.6 新增）**：响应携带弱 `ETag`（按截断后条目内容哈希）+ `Cache-Control: private, max-age=300`；请求带 `If-None-Match` 命中时返回 `304` 零字节，重进榜单页不再传输整榜数据。
+
+**data 字段**：`source_name`、`board_name`、`from_cache`、`items[]`（`rank` / `title` / `author` / `book_url` / `category` / `latest_chapter` / `last_update`）。
+
+> **MySQL 部署要求**：DB 缓存层依赖 `ranking_cache` 表（SQLite 桌面版自动建表），MySQL 需手动执行 `backend/migrations/add_ranking_cache.sql`；表缺失时自动降级为「内存缓存 → 实时抓取」两级。
 
 ---
 
@@ -1753,8 +1862,12 @@ GET /health
 
 ---
 
-> **文档版本**：v1.3 | **最后更新**：2026-08-23
+> **文档版本**：v1.6 | **最后更新**：2026-09-24
 > 
+> **v1.5 更新内容**：
+> - 新增 AI 全网题材推荐接口 `POST /api/v1/ai/recommend`（前端 v2.6：全网 tab 输入为题材/描述时先展示 AI 推荐卡片，选中后以书名全网搜索；Dify 不可用时返回空列表由前端回退）
+> - AI 摘要内容净化：剥离推理型模型思维链、移除"（基于样本推断）"等推断性说明字样（`POST/GET /ai/summary/{book_id}` 行为不变，仅返回内容更干净）
+>
 > **v1.2/v1.3 更新内容**：
 > - 新增标记/置顶接口 `PUT /api/v1/books/{book_id}/mark`（v1.2）
 > - 新增章节接口 `GET /chapters` 与 `GET /chapters/{chapter_index}`（v1.2）

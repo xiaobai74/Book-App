@@ -30,6 +30,8 @@ export const useSearchPageStore = defineStore('searchPage', () => {
   const addedBookIds = ref<Record<number, string>>({})
   /** 书架 source_url 快照（判断「已在书架」），加载过一次后不再重复拉取 */
   const shelfUrls = ref<string[]>([])
+  /** v2.7 阶段1b：书架快照轻拷贝（与 shelfUrls 同源同批加载），供全网搜索秒出「书架已有」提示 */
+  const shelfBriefs = ref<{ id: string; title: string; author: string }[]>([])
   const shelfUrlsLoaded = ref(false)
 
   // ── 全网搜索 · AI 题材推荐状态（v2.6）────────────────
@@ -79,6 +81,7 @@ export const useSearchPageStore = defineStore('searchPage', () => {
     lastWebQuery,
     addedBookIds,
     shelfUrls,
+    shelfBriefs,
     shelfUrlsLoaded,
     webRecommending,
     webRecommendations,

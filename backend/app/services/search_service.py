@@ -10,6 +10,8 @@ import logging
 import random
 import re
 import ssl
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urljoin
@@ -20,6 +22,84 @@ from bs4 import BeautifulSoup
 from rules.rule_engine import get_rule_engine
 
 logger = logging.getLogger(__name__)
+
+
+class SearchCache:
+    """外部搜索结果的内存 LRU + TTL 缓存。
+
+    - 仅依赖 ``collections.OrderedDict``，无外部缓存库依赖。
+    - 命中时将 key 移动到末尾（最近使用），超出容量时淘汰最久未用项。
+    - 读取时惰性检查 TTL，过期项立即剔除。
+    - asyncio 单线程模型下读写均为同步原子操作，无需额外加锁。
+    """
+
+    def __init__(self, max_size: int = 200, ttl: int = 300):
+        # 值为 (写入时间戳, SearchResult 列表)；SearchResult 在下方定义，使用 Any 避免前向引用
+        self._cache: "OrderedDict[str, tuple[float, Any]]" = OrderedDict()
+        self._max_size = max(1, int(max_size))
+        self._ttl = max(1, int(ttl))
+        self._hits = 0
+        self._misses = 0
+
+    def get(self, key: str) -> Any | None:
+        """读取缓存；命中返回结果列表副本（避免外部修改污染缓存），未命中或过期返回 None。"""
+        item = self._cache.get(key)
+        if item is None:
+            self._misses += 1
+            return None
+        timestamp, value = item
+        if time.monotonic() - timestamp >= self._ttl:
+            # 过期：惰性删除
+            del self._cache[key]
+            self._misses += 1
+            return None
+        # LRU: 命中移到末尾
+        self._cache.move_to_end(key)
+        self._hits += 1
+        # 返回浅拷贝，防止调用方修改 list 影响缓存
+        return list(value)
+
+    def set(self, key: str, value: Any) -> None:
+        """写入缓存；超出容量时淘汰最久未使用项。"""
+        if key in self._cache:
+            del self._cache[key]
+        self._cache[key] = (time.monotonic(), list(value))
+        while len(self._cache) > self._max_size:
+            self._cache.popitem(last=False)
+
+    def invalidate(self, key: str) -> None:
+        """显式失效某个缓存项（保留接口，便于将来支持 force 刷新场景）。"""
+        self._cache.pop(key, None)
+
+    def clear(self) -> None:
+        """清空缓存。"""
+        self._cache.clear()
+
+    @property
+    def stats(self) -> dict[str, int]:
+        """返回命中统计，便于日志/监控。"""
+        return {
+            "size": len(self._cache),
+            "max_size": self._max_size,
+            "ttl": self._ttl,
+            "hits": self._hits,
+            "misses": self._misses,
+        }
+
+
+# 模块级缓存单例：仅用于外部源站搜索结果，不影响书架内 DB 搜索。
+# 容量 200，TTL 5 分钟，与 ranking_service 的全局单例模式保持一致。
+search_cache = SearchCache(max_size=200, ttl=300)
+
+
+def _build_search_cache_key(keyword: str, source_id: int | None) -> str:
+    """生成缓存键：keyword 归一化（去首尾空格、转小写） + 源站 ID。
+
+    source_id 为 None 表示搜索全部源站，键中以字面量 "None" 占位，
+    与指定具体源站的结果天然区分。
+    """
+    normalized = (keyword or "").strip().lower()
+    return f"{normalized}:{source_id}"
 
 _CURRENT_UA_VERSION = "131"
 _USER_AGENTS = [
@@ -90,7 +170,9 @@ class SearchService:
                 client_cookies.set(k, v, domain="")
 
         return httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=15.0),
+            # v2.7 阶段1a：收紧单源超时（原 30s/15s）。慢源站由流式搜索按源增量下发，
+            # 不再拖住整次搜索；超时源记为失败，用户已收到其他源站的结果。
+            timeout=httpx.Timeout(10.0, connect=6.0),
             follow_redirects=True,
             max_redirects=5,
             verify=self._ssl_context,
@@ -106,6 +188,7 @@ class SearchService:
         keyword: str,
         source_id: int | None = None,
         search_limit: int = 30,
+        force: bool = False,
     ) -> list[SearchResult]:
         """对外部源站发起搜索请求，合并去重结果。
 
@@ -113,10 +196,22 @@ class SearchService:
             keyword: 搜索关键词
             source_id: 指定源站 ID，None 则搜索所有源站
             search_limit: 每个源站最大结果数
+            force: 为 True 时跳过内存缓存，强制重拉源站（仅供内部/调试使用，
+                现有 HTTP API 未暴露此参数，API 响应结构保持不变）
 
         Returns:
             去重后的搜索结果列表
         """
+        # ── 缓存层：仅适用于外部源站搜索，不影响书架内 DB 搜索 ──
+        cache_key = _build_search_cache_key(keyword, source_id)
+        if not force:
+            cached = search_cache.get(cache_key)
+            if cached is not None:
+                logger.info(
+                    f"搜索「{keyword}」命中缓存: {len(cached)} 条结果 (source_id={source_id})"
+                )
+                return cached
+
         if source_id is not None:
             rule = self._engine.get_rule_by_id(source_id)
             if rule is None:
@@ -155,7 +250,118 @@ class SearchService:
                     all_results.append(result)
 
         logger.info(f"搜索「{keyword}」: {len(searchable)} 个源站, {len(all_results)} 条结果")
+
+        # ── 写入缓存：仅缓存非空结果，避免临时性源站故障被缓存住 ──
+        if all_results:
+            search_cache.set(cache_key, all_results)
+
         return all_results
+
+    # ── 流式搜索（v2.7 阶段1a）─────────────────────────
+
+    # 整体流截止：超过后未完成源站按失败收尾，避免前端无限等待最慢源站
+    STREAM_TOTAL_DEADLINE = 20.0
+
+    async def search_stream(
+        self,
+        keyword: str,
+        source_id: int | None = None,
+        search_limit: int = 30,
+    ):
+        """按源站增量产出搜索结果（供 SSE 端点消费）。
+
+        yield (kind, payload)：
+          meta                {"sources": [{"id","name"}...], "cached": bool}
+          source              {"source_id", "source_name", "results": list[SearchResult]}
+                              —— 单源完成即推送（含空结果/失败，results 为空列表）
+          ping                {} —— 心跳，API 层转为 SSE 注释行
+          done                {"total": int} —— 合并去重后的总数
+
+        与同步 search() 共用 LRU+TTL 缓存：命中时按源站分组回放，不触网。
+        同步端点保持不变，旧客户端零影响。
+        """
+        cache_key = _build_search_cache_key(keyword, source_id)
+        cached = search_cache.get(cache_key)
+        if cached is not None:
+            groups: "OrderedDict[tuple[int, str], list[SearchResult]]" = OrderedDict()
+            for r in cached:
+                groups.setdefault((r.source_id, r.source_name), []).append(r)
+            yield ("meta", {
+                "sources": [{"id": k[0], "name": k[1]} for k in groups],
+                "cached": True,
+            })
+            for (gid, gname), rs in groups.items():
+                yield ("source", {"source_id": gid, "source_name": gname, "results": rs})
+            yield ("done", {"total": len(cached)})
+            return
+
+        if source_id is not None:
+            rule = self._engine.get_rule_by_id(source_id)
+            if rule is None or not rule.get("search") or rule.get("search", {}).get("disabled"):
+                yield ("meta", {"sources": [], "cached": False})
+                yield ("done", {"total": 0})
+                return
+            searchable = [(source_id, rule)]
+        else:
+            searchable = self._engine.list_searchable_sources()
+
+        yield ("meta", {
+            "sources": [{"id": sid, "name": rule.get("name", "")} for sid, rule in searchable],
+            "cached": False,
+        })
+        if not searchable:
+            logger.warning("流式搜索：没有可用的搜索源站")
+            yield ("done", {"total": 0})
+            return
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.STREAM_TOTAL_DEADLINE
+        tasks = {
+            asyncio.create_task(
+                self._search_one_source(keyword, sid, rule, search_limit)
+            ): (sid, rule.get("name", "未知源站"))
+            for sid, rule in searchable
+        }
+        merged: list[SearchResult] = []
+        seen: set[str] = set()
+
+        pending = set(tasks)
+        try:
+            while pending:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    for t in pending:
+                        sid, sname = tasks[t]
+                        logger.warning(f"流式搜索截止，未完成源站按失败处理: {sname}")
+                        yield ("source", {"source_id": sid, "source_name": sname, "results": []})
+                    break
+                finished, pending = await asyncio.wait(
+                    pending, timeout=min(5.0, remaining),
+                )
+                if not finished:
+                    yield ("ping", {})
+                    continue
+                for t in finished:
+                    sid, sname = tasks[t]
+                    results: list[SearchResult] = []
+                    if not t.cancelled() and t.exception() is None:
+                        results = t.result()
+                    elif t.exception() is not None:
+                        logger.warning(f"流式搜索源站异常 [{sname}]: {t.exception()}")
+                    for r in results:
+                        if r.unique_key not in seen:
+                            seen.add(r.unique_key)
+                            merged.append(r)
+                    yield ("source", {"source_id": sid, "source_name": sname, "results": results})
+        finally:
+            for t in pending:
+                t.cancel()
+
+        # 与同步 search() 相同的缓存语义：仅缓存非空结果
+        if merged:
+            search_cache.set(cache_key, merged)
+        logger.info(f"流式搜索「{keyword}」完成: {len(searchable)} 源站, {len(merged)} 条结果")
+        yield ("done", {"total": len(merged)})
 
     # ── 单源站搜索 ────────────────────────────────────
 

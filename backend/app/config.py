@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # 全网搜索「题材 → 推荐书籍」工作流 API Key（未配置时前端回退为直接全网搜索）
     dify_recommend_api_key: str = ""
 
+    # 排行榜缓存 TTL
+    ranking_cache_ttl: int = 900          # 内存缓存 TTL（秒），默认 15 分钟
+    ranking_db_cache_ttl: int = 3600      # DB 缓存 TTL（秒），默认 1 小时
+
     # 导出目录（桌面版存用户数据目录，避免写入安装目录）
     epub_output_dir: str = str(DATA_DIR / "epub_output")
     txt_output_dir: str = str(DATA_DIR / "txt_output")

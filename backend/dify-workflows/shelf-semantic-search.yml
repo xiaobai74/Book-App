@@ -2,7 +2,9 @@
 # Dify Chatflow 参考配置：自然语言书架搜索
 #
 # 导入方式：在 Dify 中"创建应用 → 导入 DSL"，粘贴本文件内容
-# 类型：Chatflow
+# 类型：Chatflow（DSL mode 必须为 advanced-chat；
+#       写成 chat 会被 Dify 当作基础对话应用校验并报错
+#       "Missing model_config for chat/agent-chat/completion app"）
 #
 # 功能：接收用户的自然语言查询 + 书架书籍数据（JSON），
 #       由 LLM 进行语义匹配，返回 Top 5 最匹配的书籍。
@@ -16,7 +18,7 @@ app:
   description: "自然语言书架搜索 — 用日常语言描述想找的书，AI 帮你从书架中精准匹配"
   icon: "🔍"
   icon_background: "#E0F2FE"
-  mode: chat
+  mode: advanced-chat
   name: "书架语义搜索"
 
 kind: app
@@ -54,21 +56,38 @@ workflow:
         sourceHandle: "source"
         target: "llm"
         targetHandle: "target"
+        type: "custom"
+        data:
+          isInIteration: false
+          sourceType: "start"
+          targetType: "llm"
       - id: "llm-to-code"
         source: "llm"
         sourceHandle: "source"
         target: "code"
         targetHandle: "target"
+        type: "custom"
+        data:
+          isInIteration: false
+          sourceType: "llm"
+          targetType: "code"
       - id: "code-to-answer"
         source: "code"
         sourceHandle: "source"
         target: "answer"
         targetHandle: "target"
+        type: "custom"
+        data:
+          isInIteration: false
+          sourceType: "code"
+          targetType: "answer"
 
     nodes:
       # ══ 节点 1: 开始 — 接收用户输入 ═══════════════════════════════
       - id: "start"
-        type: "start"
+        type: "custom"
+        sourcePosition: right
+        targetPosition: left
         position:
           x: 80
           "y": 140
@@ -97,7 +116,9 @@ workflow:
 
       # ══ 节点 2: LLM — 执行语义匹配 ═══════════════════════════════
       - id: "llm"
-        type: "llm"
+        type: "custom"
+        sourcePosition: right
+        targetPosition: left
         position:
           x: 380
           "y": 140
@@ -163,7 +184,9 @@ workflow:
 
       # ══ 节点 3: Code — 解析/校验 JSON ═══════════════════════════
       - id: "code"
-        type: "code"
+        type: "custom"
+        sourcePosition: right
+        targetPosition: left
         position:
           x: 680
           "y": 140
@@ -213,14 +236,17 @@ workflow:
               value_selector:
                 - "llm"
                 - "text"
+          # Dify 0.6+ Code 节点 outputs 为字典格式（name → {type, children}）
           outputs:
-            - name: "results"
+            results:
               type: "string"
               children: null
 
       # ══ 节点 4: 回答 — 返回结构化结果 ═════════════════════════════
       - id: "answer"
-        type: "answer"
+        type: "custom"
+        sourcePosition: right
+        targetPosition: left
         position:
           x: 980
           "y": 140

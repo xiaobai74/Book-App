@@ -13,6 +13,7 @@ v1.4 优化:
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime
 
 import httpx
@@ -62,6 +63,43 @@ def _safe_parse_json_array(raw: str, fallback: list | None = None) -> list:
     except json.JSONDecodeError:
         logger.warning("JSON 数组解析失败，原始文本前 200 字符: %s", raw[:200])
         return fallback
+
+
+# 推理模型思维链标签（碎片拼接构造，避免字面标签被解析器误处理）
+_THINK_OPEN = "<" + "think>"
+_THINK_CLOSE = "<" + "/think>"
+_THINK_BLOCK_RE = re.compile(
+    re.escape(_THINK_OPEN) + r".*?" + re.escape(_THINK_CLOSE), re.DOTALL
+)
+
+# 摘要中不应出现的推断性说明字样（旧版提示词曾要求模型追加，现统一剥离）
+_SUMMARY_NOISE_MARKERS = ("（基于样本推断）", "(基于样本推断)")
+
+
+def _sanitize_summary_text(text: str) -> str:
+    """剥离推理型模型（DeepSeek-R1/QwQ 等）输出前置的思维链，仅保留正式摘要。
+
+    思维链常以与正式摘要相同的【】标题「复述任务要求」，使 Dify Code 节点
+    「截掉首个【之前文字」的逻辑截错位置、把思维链一并入库。处理顺序：
+    1. 移除完整的 think 思维块（开标签至闭标签）；
+    2. 若存在单独的闭标签，取其最后一次出现之后的内容；
+    3. 以最后一次出现的 `【情节摘要】` 为正式摘要起点（正式答案必以该标记开头）；
+    4. 剥离"（基于样本推断）"等推断性说明字样（旧版提示词产物）。
+    无上述特征时原样返回（不影响非推理模型的正常输出）。
+    """
+    t = text.strip()
+    t = _THINK_BLOCK_RE.sub("", t).strip()
+    if _THINK_CLOSE in t:
+        t = t.rsplit(_THINK_CLOSE, 1)[-1].strip()
+    if t.startswith(_THINK_OPEN):
+        # 仅剩未闭合的思维链（被 max_tokens 截断），无有效摘要
+        return ""
+    idx = t.rfind("【情节摘要】")
+    if idx > 0:
+        t = t[idx:]
+    for marker in _SUMMARY_NOISE_MARKERS:
+        t = t.replace(marker, "")
+    return t.strip()
 
 
 class AiService:
@@ -482,6 +520,16 @@ class AiService:
                     "error": "Dify 工作流未返回摘要内容，请检查工作流配置",
                 }
                 logger.error("Dify 摘要响应格式不符预期: %s", json.dumps(body, ensure_ascii=False)[:500])
+                return
+
+            # 剥离推理型模型的思维链（其复述任务要求的【】标题会导致截错位置）
+            summary_text = _sanitize_summary_text(summary_text)
+            if not summary_text:
+                _summary_progress[book_id] = {
+                    "status": "failed",
+                    "error": "模型仅输出推理过程未生成摘要，请重试或将工作流换为非推理模型",
+                }
+                logger.error("摘要剥离思维链后无有效内容: book_id=%s", book_id)
                 return
 
             # 4. 存储摘要到数据库

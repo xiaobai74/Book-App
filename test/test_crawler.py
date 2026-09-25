@@ -22,7 +22,7 @@ def test_rule_matching():
     """测试规则匹配"""
     engine = get_rule_engine()
 
-    rule = engine.match_rule("http://www.xbiqugu.la/123/456.html")
+    rule = engine.match_rule("http://www.ibiqugu.net/123/456.html")
     assert rule is not None
     assert rule["name"] == "香书小说", f"Expected '香书小说', got '{rule['name']}'"
     print(f"  [PASS] Exact domain match: {rule['name']}")
@@ -208,6 +208,119 @@ def test_chapter_sort_with_volume_reset():
     print("  [PASS] Volume-chapter format reversed corrected OK")
 
 
+def test_normalize_content():
+    """测试正文规范化：\r\n / NBSP / HTML 实体 / 残留标签 / 脏缩进"""
+    from app.services.crawler_service import CrawlerService
+
+    raw = "第一段。\r\n \n\xa0\xa0\xa0\xa0第二段&nbsp;结束。<p>第三段</p>&#26085;"
+    out = CrawlerService._normalize_content(raw)
+    assert "\r" not in out, f"残留回车符: {out!r}"
+    assert "\xa0" not in out, f"残留 NBSP: {out!r}"
+    assert "<" not in out and ">" not in out, f"残留标签: {out!r}"
+    assert "&#" not in out and "&nbsp;" not in out, f"残留实体: {out!r}"
+    assert "第一段。" in out and "第二段" in out and "第三段" in out, f"正文丢失: {out!r}"
+    assert "日" in out, f"数字实体未解码: {out!r}"
+    assert "\n\n\n" not in out, f"空行未折叠: {out!r}"
+    # 幂等：再规范化一次结果不变
+    assert CrawlerService._normalize_content(out) == out, "规范化非幂等"
+    print("  [PASS] _normalize_content 规范化 OK")
+
+
+def test_extract_page_title():
+    """测试章节标题提取（去除页码后缀）"""
+    from app.services.crawler_service import CrawlerService
+
+    svc = CrawlerService()
+    html = '<div class="bookname"><h1>第一章 青云(2/3)</h1></div><div id="content">正文</div>'
+    rule = {"chapter": {"title": ".bookname > h1", "content": "#content"}}
+    assert svc._extract_page_title(html, rule) == "第一章 青云"
+    # 无 title 选择器 → ""
+    assert svc._extract_page_title(html, {"chapter": {"content": "#content"}}) == ""
+    # 选择器未命中 → ""
+    assert svc._extract_page_title(html, {"chapter": {"title": "#nope"}}) == ""
+    print("  [PASS] _extract_page_title 标题提取/去页码 OK")
+
+
+def test_pagination_chapter_boundary():
+    """分页遇到“下一章”（标题变化）应停止合并，避免多章合并"""
+    import asyncio
+
+    from app.services.crawler_service import CrawlerService
+
+    svc = CrawlerService()
+    svc.min_interval = 0
+    svc.max_interval = 0
+
+    base = "http://x.com/book/"
+    pages = {
+        base + "1.html": '<div class="bookname"><h1>第一章 青云(1/2)</h1></div>'
+                         '<div id="content">第一章正文A</div>'
+                         '<a id="pager_next" href="2.html">下一页</a>',
+        base + "2.html": '<div class="bookname"><h1>第一章 青云(2/2)</h1></div>'
+                         '<div id="content">第一章正文B</div>'
+                         '<a id="pager_next" href="3.html">下一页</a>',
+        base + "3.html": '<div class="bookname"><h1>第二章 迷局</h1></div>'
+                         '<div id="content">第二章正文C</div>'
+                         '<a id="pager_next" href="4.html">下一页</a>',
+    }
+
+    async def fake_get(client, url, retries=None):
+        return pages[url]
+
+    svc._get = fake_get
+    rule = {"chapter": {
+        "title": ".bookname > h1",
+        "content": "#content",
+        "paragraphTagClosed": True,
+        "pagination": True,
+        "nextPage": "#pager_next",
+    }}
+    result = asyncio.run(
+        svc._crawl_chapter_with_pagination(None, base + "1.html", rule)
+    )
+    assert "第一章正文A" in result, result
+    assert "第一章正文B" in result, result
+    assert "第二章正文C" not in result, f"下一章被错误合并: {result}"
+    assert "第二章" not in result, f"下一章标题混入: {result}"
+    print("  [PASS] 分页章节边界停止（不多章合并）OK")
+
+
+def test_check_connectivity_dns_failure():
+    """DNS 解析失效应归类为域名失效并给出“换源”建议"""
+    import asyncio
+
+    import httpx
+
+    from app.services.crawler_service import CrawlerService
+
+    svc = CrawlerService()
+    svc._connectivity_cache.clear()
+
+    class FakeStreamCtx:
+        async def __aenter__(self):
+            raise httpx.ConnectError("[Errno 11004] getaddrinfo failed")
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def stream(self, *a, **k):
+            return FakeStreamCtx()
+
+    svc._make_client = lambda cookies=None: FakeClient()
+    result = asyncio.run(svc.check_connectivity("http://www.dead-source-xyz.la/1/"))
+    assert result.reachable is False
+    assert "无法解析" in (result.error_message or ""), result.error_message
+    assert "换用其它源站" in (result.suggested_fix or ""), result.suggested_fix
+    print("  [PASS] check_connectivity DNS 失效提示 OK")
+
+
 def run_all():
     tests = [
         test_rule_loading,
@@ -221,6 +334,10 @@ def run_all():
         test_cookies_parsing,
         test_form_data_parsing,
         test_filter_element_removal,
+        test_normalize_content,
+        test_extract_page_title,
+        test_pagination_chapter_boundary,
+        test_check_connectivity_dns_failure,
     ]
     passed = 0
     failed = 0

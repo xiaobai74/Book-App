@@ -26,7 +26,7 @@
           <line x1="8" y1="7" x2="16" y2="7"/>
           <line x1="8" y1="11" x2="14" y2="11"/>
         </svg>
-        我的书架
+        <span class="logo-text">我的书架</span>
       </div>
 
       <!-- 桌面搜索框（v1.6：自定义 flex 容器替代 input-group，prepend/append 有内部负 margin hack 导致错位；
@@ -80,18 +80,6 @@
           </el-button>
         </router-link>
 
-        <!-- 移动端搜索按钮：位于用户头像左侧（v1.6），汉堡图标唤起搜索行 -->
-        <el-button
-          v-if="showSearch"
-          class="mobile-search-toggle"
-          text
-          aria-label="搜索"
-          :aria-expanded="mobileSearchOpen"
-          @click="mobileSearchOpen = !mobileSearchOpen"
-        >
-          <el-icon><Search /></el-icon>
-        </el-button>
-
         <!-- 用户头像（v2.4：点击跳转「我的」页面，原下拉菜单功能已迁入该页） -->
         <button
           type="button"
@@ -101,31 +89,6 @@
         >
           {{ authStore.avatarLetter }}
         </button>
-      </div>
-    </div>
-
-    <div v-if="showSearch && mobileSearchOpen" class="mobile-search-row">
-      <div class="mobile-search-box">
-        <el-select v-model="searchTarget" size="small" class="mobile-target-select">
-          <el-option label="书架内" value="shelf" />
-          <el-option label="全网搜索" value="web" />
-        </el-select>
-        <el-input
-          v-model="searchQuery"
-          :placeholder="inputPlaceholder"
-          :prefix-icon="Search"
-          class="mobile-search-input"
-          clearable
-          @keyup.enter="handleSearch"
-        />
-        <el-button
-          type="primary"
-          size="small"
-          aria-label="搜索"
-          @click="handleSearch"
-        >
-          <el-icon><Search /></el-icon>
-        </el-button>
       </div>
     </div>
 
@@ -154,7 +117,6 @@ const shelfSearch = useShelfSearchStore()
 const router = useRouter()
 const searchQuery = ref('')
 const searchTarget = ref<'shelf' | 'web'>('web')
-const mobileSearchOpen = ref(false)
 
 /** 输入框占位文案：书架内按开关状态区分自动识别 / 普通搜索（v2.1，AI 开启时自动识别） */
 const inputPlaceholder = computed(() => {
@@ -170,7 +132,6 @@ const inputPlaceholder = computed(() => {
 function handleSearch() {
   const q = searchQuery.value.trim()
   if (!q) return
-  mobileSearchOpen.value = false
   if (searchTarget.value === 'web') {
     // v2.6：显式携带 mode=web，意图路由（题材→AI推荐 / 书名→直接搜索）在 SearchView 内完成
     router.push(`/search?q=${encodeURIComponent(q)}&mode=web`)
@@ -277,63 +238,6 @@ function handleSearch() {
 /* ── 桌面搜索框：prepend 下拉与 append 按钮撑满输入框高度（v1.6） ──
    已废弃：input-group 的 prepend/append 存在内部负 margin hack，改用 .desktop-search-box 自定义容器 */
 
-/* ── 移动端搜索按钮（默认隐藏，≤760px 显示） ── */
-.mobile-search-toggle {
-  display: none;
-  flex-shrink: 0;
-  font-size: 18px;
-  min-height: 36px;
-  padding: 6px 10px;
-}
-
-/* ── 移动端搜索行（默认隐藏） ── */
-.mobile-search-row {
-  display: none;
-  padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.mobile-search-box {
-  display: flex;
-  align-items: stretch; /* 三件套（下拉/输入框/按钮）统一高度，v1.6 */
-  gap: 8px;
-  height: 40px;
-  width: 100%;
-  max-width: 560px;
-  margin: 0 auto;
-}
-
-.mobile-target-select {
-  width: 108px;
-  flex-shrink: 0;
-}
-
-.mobile-target-select :deep(.el-select__wrapper) {
-  min-height: 40px;
-  height: 40px;
-}
-
-.mobile-search-input {
-  flex: 1;
-  min-width: 0;
-}
-
-.mobile-search-input :deep(.el-input__wrapper) {
-  flex-grow: 1;
-}
-
-.mobile-search-input :deep(.el-input__inner) {
-  height: 100%;
-}
-
-/* 搜索按钮与输入框严格等高（Element Plus 按钮有显式 height，需覆盖而非依赖 stretch） */
-.mobile-search-box :deep(.el-button) {
-  height: 40px;
-  min-height: 40px;
-  flex-shrink: 0;
-}
-
 /* ── 导航操作按钮：桌面显示文字，≤760px 仅显示图标 ── */
 .nav-btn-icon {
   display: none;
@@ -357,10 +261,17 @@ function handleSearch() {
 }
 
 @media (max-width: 760px) {
-  /* 搜索框收进可展开行 */
-  .desktop-search-box { display: none; }
-  .mobile-search-toggle { display: inline-flex; }
-  .mobile-search-row { display: block; }
+  /* 搜索框直接显示在导航栏（取消折叠交互） */
+  .desktop-search-box {
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+    height: 32px;
+  }
+  /* 隐藏 logo 文字，仅保留图标 */
+  .logo-text { display: none; }
+  /* 搜索范围下拉收窄 */
+  .desktop-target-select { width: 80px; }
 
   /* 排行榜入口仅桌面端显示，移动端走底部 TabBar */
   .desktop-ranking-link { display: none; }
@@ -379,7 +290,7 @@ function handleSearch() {
   .topnav-inner { gap: 6px; }
   .topnav .logo-area { font-size: 16px; }
   .nav-btn { padding: 6px; }
-  .mobile-search-row { padding-inline: 10px; }
-  .mobile-target-select { width: 100px; }
+  .desktop-target-select { width: 72px; }
+  .desktop-search-box { height: 30px; }
 }
 </style>

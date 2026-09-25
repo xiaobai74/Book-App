@@ -16,6 +16,11 @@
 #   2. Code 节点 outputs 中 generated 的类型可能被导入为 string，
 #      运行时报 "Output generated must be a string, got bool instead"。
 #      修复：在 Dify 画布中将 generated 输出类型改为 boolean。
+#   3. 推理型模型（DeepSeek-R1/QwQ 等）会在输出前置思维链，思维链以【】
+#      标题复述任务要求，v0.1.0 的 Code 节点「截掉首个【之前文字」会截错
+#      位置、把思维链一并入库（前端表现为显示"提示部分"）。v0.1.1 修复：
+#      Code 节点先剥离 think 思维块；后端 ai_service._sanitize_summary_text
+#      同步兜底剥离（无需重新导入本文件即可对存量应用生效）。
 #   （本文件中的 DSL 定义本身是正确的，问题出在 Dify 的 DSL 导入器。）
 # ═══════════════════════════════════════════════════════════════
 
@@ -130,7 +135,8 @@ workflow:
 
                 【情节摘要】
                 约 150 字的情节概述。描述故事的核心冲突和主要情节走向，但不要剧透结局。
-                如果从章节样本中无法判断完整情节，请基于已有内容合理推断，并在文末标注"（基于样本推断）"。
+                如果从章节样本中无法判断完整情节，请基于已有内容合理推断并以确定性口吻表述，
+                不要在文中添加"基于样本推断"等任何推断性说明字样。
 
                 【主要角色】
                 列出 3-5 个主要角色。每个角色一行，格式为：**角色名**（如有）：一句话描述其身份和性格特点。
@@ -167,8 +173,20 @@ workflow:
                 清理 LLM 输出，确保格式一致。
                 输出直接作为 API 回调的 body。
                 """
+                import re
+                # 剥离推理型模型的思维链（思维块以【】标题复述任务要求，
+                # 会使下方「截掉首个【之前文字」截错位置）
+                open_tag = "<" + "think>"
+                close_tag = "<" + "/think>"
+                text = re.sub(
+                    re.escape(open_tag) + r".*?" + re.escape(close_tag),
+                    "", llm_output, flags=re.DOTALL,
+                ).strip()
+                if close_tag in text:
+                    text = text.rsplit(close_tag, 1)[-1].strip()
+
                 # 去掉首尾空白
-                text = llm_output.strip()
+                text = text.strip()
 
                 # 确保以【开头（有时 LLM 会加前缀文字）
                 idx = text.find("【")

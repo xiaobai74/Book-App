@@ -8,10 +8,12 @@ v1.2 扩展：标记置顶、章节获取、阅读进度。
 import logging
 import os
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.models.book import Book
 from app.models.chapter import Chapter
@@ -25,8 +27,33 @@ from app.schemas.book import (
     CrawlStatusResponse,
     ReadingProgressResponse,
 )
+from rules.rule_engine import get_rule_engine
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_source_name(source_url: str | None) -> str | None:
+    """将 source_url 映射为可读的源站名。
+
+    优先级：内置规则匹配 → 域名（去 www. 前缀）→ None。
+    当前仅涵盖内置 main.json 规则；用户自定义源站的书籍自然回退到域名。
+    """
+    if not source_url:
+        return None
+    try:
+        engine = get_rule_engine()
+        rule = engine.match_rule(source_url)
+        if rule and rule.get("name"):
+            return str(rule["name"])
+    except Exception:  # noqa: BLE001 规则引擎异常不影响主流程
+        logger.debug("source_name 规则匹配失败，回退到域名: %s", source_url)
+    try:
+        netloc = urlparse(source_url).netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        return netloc or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 class BookService:
@@ -367,6 +394,61 @@ class BookService:
         return list(result.scalars().all())
 
     @staticmethod
+    async def get_book_cache_meta(
+        db: AsyncSession, user: User, book_id: str
+    ) -> tuple[datetime | None, int]:
+        """轻量获取书籍缓存元数据 (updated_at, chapter_count) 并校验归属。
+
+        使用列查询而非加载 Book 实体，避免触发 chapters 关系的 selectin 加载
+        （否则会连带把整本书的 MEDIUMTEXT 正文读入内存），专用于目录 API 的 ETag 计算。
+        书籍不存在或非本人时抛 404，语义与 get_book_detail 一致。
+        """
+        row = (
+            await db.execute(
+                select(Book.updated_at, Book.chapter_count).where(
+                    Book.id == book_id,
+                    Book.user_id == user.id,
+                    Book.deleted_at.is_(None),
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            from app.middleware.error_handler import AppException
+            raise AppException(status_code=404, detail="书籍不存在或已被删除")
+        return row.updated_at, row.chapter_count
+
+    @staticmethod
+    async def get_chapters_list(
+        db: AsyncSession, book_id: str
+    ) -> list[Chapter]:
+        """获取书籍目录元数据（不加载正文 content 字段），专用于目录 API。
+
+        使用 load_only 仅拉取 id/book_id/index/title/word_count/created_at 列，
+        将 MEDIUMTEXT 正文延迟加载（defer），避免整本目录的正文被读入内存。
+        返回的仍是 Chapter ORM 实体，chapter_to_response() 可直接使用
+        （规避了 select(Chapter.index, ...) 返回 Row 时 .index 与序列方法名冲突的问题）。
+
+        注意：本方法不再校验书籍归属，调用方须先通过 get_book_cache_meta /
+        get_book_detail 完成校验，避免重复查询。按 chapter.index 升序排列。
+        """
+        result = await db.execute(
+            select(Chapter)
+            .options(
+                load_only(
+                    Chapter.id,
+                    Chapter.book_id,
+                    Chapter.index,
+                    Chapter.title,
+                    Chapter.word_count,
+                    Chapter.created_at,
+                )
+            )
+            .where(Chapter.book_id == book_id)
+            .order_by(Chapter.index.asc())
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
     async def get_chapter_content(
         db: AsyncSession, user: User, book_id: str, chapter_index: int
     ) -> Chapter:
@@ -475,6 +557,7 @@ def book_to_response(book: Book) -> BookResponse:
         title=book.title,
         author=book.author,
         source_url=book.source_url,
+        source_name=_resolve_source_name(book.source_url),
         status=book.status,
         chapter_count=book.chapter_count,
         has_epub=book.epub_path is not None and book.epub_path != "",

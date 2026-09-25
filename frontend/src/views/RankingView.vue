@@ -53,7 +53,7 @@
           <button type="button" class="back-btn back-sources-btn" @click="rankingStore.backToSources()">← 返回源站列表</button>
           <div class="ranking-title-row">
             <h2 class="ink-title">{{ selectedSource.name }}排行榜</h2>
-            <el-button :loading="loadingBoard" @click="rankingStore.loadBoard(rankingStore.activeBoard, true)">
+            <el-button :loading="loadingBoard" @click="onRefreshBoard">
               刷新榜单
             </el-button>
           </div>
@@ -74,16 +74,19 @@
           :closable="false" show-icon class="board-error">
           <template #default>
             <span>{{ boardError }}</span>
-            <el-button size="small" text type="primary" @click="rankingStore.loadBoard(rankingStore.activeBoard, true)">
+            <el-button size="small" text type="primary" @click="onRefreshBoard">
               重试
             </el-button>
           </template>
         </el-alert>
 
         <template v-else-if="currentBoard">
-          <p v-if="currentBoard.from_cache" class="cache-tip">数据来自缓存（15 分钟内）</p>
+          <p v-if="currentBoard.from_cache" class="cache-tip">
+            数据来自缓存（15 分钟内）·共 {{ currentBoard.items.length }} 条
+          </p>
+          <p v-else class="cache-tip">共抓取到 {{ currentBoard.items.length }} 条榜单数据</p>
           <ol class="rank-list">
-            <li v-for="item in currentBoard.items" :key="item.rank" class="rank-item">
+            <li v-for="item in pagedItems" :key="item.rank" class="rank-item">
               <span class="rank-badge" :class="{ top: item.rank <= 3 }">{{ item.rank }}</span>
               <div class="rank-info">
                 <div class="rank-title">
@@ -107,6 +110,15 @@
               </el-button>
             </li>
           </ol>
+          <div v-if="currentBoard.items.length > PAGE_SIZE" class="rank-pagination">
+            <el-pagination
+              v-model:current-page="currentPage"
+              :page-size="PAGE_SIZE"
+              :total="currentBoard.items.length"
+              layout="prev, pager, next, jumper, total"
+              background
+            />
+          </div>
         </template>
       </template>
     </main>
@@ -114,12 +126,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { ElMessage } from 'element-plus'
 import TopNav from '@/components/TopNav.vue'
 import { useRankingStore, useBooksStore } from '@/stores'
 import { triggerCrawl } from '@/api/books'
 import type { RankingSource, RankingBook } from '@/types'
+
+// keep-alive include 匹配所需（v2.7：Tab 页缓存）
+defineOptions({ name: 'RankingView' })
 
 /**
  * 抓取结果与页面状态全部存于 rankingStore：
@@ -143,26 +158,71 @@ const activeBoard = computed({
 })
 const addingBookId = ref<number | null>(null)
 
-onMounted(() => {
+/** 前端分页：后端一次性返回完整榜单（最多 2000 条），前端每页 PAGE_SIZE 条展示 */
+const PAGE_SIZE = 50
+const currentPage = ref(1)
+const pagedItems = computed<RankingBook[]>(() => {
+  const items = currentBoard.value?.items ?? []
+  const start = (currentPage.value - 1) * PAGE_SIZE
+  return items.slice(start, start + PAGE_SIZE)
+})
+
+/**
+ * v2.7: 首次挂载（onMounted）与从 keep-alive 缓存恢复（onActivated）均调用；
+ * store 层已有 sourcesLoaded 标记与 boardCache，重复调用不会产生额外请求。
+ */
+function loadRankingData() {
   rankingStore.loadSources()  // 已加载过则跳过，直接恢复源站列表
   // 恢复榜单浏览态：当前榜单无缓存时才请求（15 分钟内命中后端缓存）
   if (rankingStore.selectedSource && !rankingStore.currentBoard && !rankingStore.boardError) {
     rankingStore.loadBoard(rankingStore.activeBoard)
   }
-})
+}
+
+onMounted(loadRankingData)
+onActivated(loadRankingData)
 
 /** 用户点击刷新：强制重新获取源站列表 */
 function refreshSources() {
+  currentPage.value = 1
   rankingStore.loadSources(true)
 }
 
 function selectSource(s: RankingSource) {
+  currentPage.value = 1
   rankingStore.selectSource(s)
   rankingStore.loadBoard(0)
+  scheduleIdlePrefetch(s)
+}
+
+/**
+ * v2.7 阶段2：进入某源站榜单后，浏览器空闲时串行预取该源站其余榜单，
+ * 用户切 Tab 时直接命中 store 缓存秒开。串行避免并发抓取压垮源站。
+ */
+function scheduleIdlePrefetch(source: RankingSource) {
+  const rest = source.board_names.slice(1).map((_, i) => i + 1)
+  if (!rest.length) return
+  const run = async () => {
+    for (const idx of rest) {
+      await rankingStore.prefetchBoard(source.id, idx)
+    }
+  }
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(() => { run() }, { timeout: 5000 })
+  } else {
+    setTimeout(run, 2000)  // Safari 等无 requestIdleCallback 环境的降级
+  }
 }
 
 function onBoardChange(name: string | number) {
+  currentPage.value = 1
   rankingStore.loadBoard(Number(name))
+}
+
+/** 刷新当前榜单：重置分页并跳过前后端缓存 */
+function onRefreshBoard() {
+  currentPage.value = 1
+  rankingStore.loadBoard(rankingStore.activeBoard, true)
 }
 
 /** 加入书架：走 store 添加（本地同步书架缓存，返回书架即可见），成功后自动触发抓取 */
@@ -294,6 +354,11 @@ async function addToShelf(item: RankingBook) {
   white-space: nowrap;
 }
 .board-error { margin-bottom: 12px; }
+.rank-pagination {
+  margin-top: 16px;
+  display: flex;
+  justify-content: center;
+}
 
 @media (max-width: 760px) {
   .ranking-main { padding: 16px 12px; }

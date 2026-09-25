@@ -9,29 +9,38 @@
      ═══════════════════════════════════════════════════════════════ -->
 <template>
   <div>
-    <TopNav :show-back-to-shelf="true" />
+    <!-- 桌面端 TopNav 因此显示排行榜入口（与书架/搜索等页一致，属预期副作用）；返回书架入口唯一为本行下方的 .detail-back-row -->
+    <TopNav :show-back-to-shelf="false" />
 
     <section class="section">
       <div class="container">
+        <!-- 返回书架按钮：全视口靠左，加载态/空态期间也可见可点 -->
+        <div class="detail-back-row">
+          <router-link to="/shelf" class="back-btn">← 返回书架</router-link>
+        </div>
+
         <!-- 加载中（仅完全无缓存且正在拉取时展示） -->
         <div v-if="pageLoading && !book" class="empty-state">
           <div class="loading-bar"></div>
           <p style="margin-top:12px">加载中…</p>
         </div>
 
-        <!-- 不存在 -->
+        <!-- 不存在（返回书架走顶部 .detail-back-row 唯一入口，空态内不再重复按钮） -->
         <div v-else-if="!book && !pageLoading" class="empty-state">
           <p>该书籍不存在或已被删除</p>
-          <el-button type="primary" style="margin-top:16px" @click="$router.push('/shelf')">返回书架</el-button>
         </div>
 
         <!-- 详情内容 -->
         <template v-if="book">
-          <el-button text style="margin-bottom:16px" @click="$router.push('/shelf')">← 返回书架</el-button>
-
-          <!-- 书籍信息卡片 -->
+          <!-- 书籍信息卡片：封面左 / 信息右 / 功能按钮独立在下方 -->
           <div class="card" style="margin-bottom:24px">
             <div class="detail-header">
+              <BookCover
+                class="detail-cover"
+                :title="book.title"
+                :author="book.author"
+                :cover-src="getCoverUrl(book.id, book.has_cover)"
+              />
               <div class="detail-info">
                 <!-- v1.3 修复: PRD 要求详情页有星标标记按钮（原仅书架列表页可标记） -->
                 <h1 style="font-size:clamp(28px,4vw,36px);font-weight:700;display:inline-flex;align-items:center;gap:10px">
@@ -50,7 +59,7 @@
                 </h1>
                 <p class="lead" style="margin-top:6px">作者：{{ book.author }}</p>
                 <p v-if="book.source_url" style="font-size:12px;color:var(--muted);margin-top:2px">
-                  来源：<a :href="book.source_url" target="_blank" rel="noopener">{{ book.source_url }}</a>
+                  来源：{{ book.source_name || book.source_url }}
                 </p>
                 <div class="detail-meta" style="margin-top:12px">
                   <span class="meta">添加时间：{{ formatDate(book.added_at) }}</span>
@@ -63,81 +72,71 @@
                   <span v-if="book.latest_chapter" class="meta">最新：{{ book.latest_chapter }}</span>
                   <span v-if="book.last_update_time" class="meta">源站更新：{{ book.last_update_time }}</span>
                 </div>
-                <div class="detail-actions">
-                  <!-- 抓取按钮仅对有源站链接的书籍显示；本地导入书（无 source_url）不可抓取 -->
-                  <el-button
-                    v-if="book.source_url"
-                    type="primary"
-                    :disabled="book.status === 'crawling'"
-                    :loading="crawling"
-                    @click="handleCrawl"
-                  >
-                    {{ book.status === 'done' ? '重新抓取' : '抓取小说内容' }}
-                  </el-button>
-                  <el-tag v-else type="info" effect="plain" style="align-self:center">本地导入</el-tag>
-                  <!-- v1.2: 在线阅读按钮 -->
-                  <el-button
-                    type="success"
-                    :disabled="!book.has_epub && book.chapter_count === 0"
-                    @click="startReading"
-                  >
-                    在线阅读
-                  </el-button>
-                  <el-dropdown
-                    v-if="book.has_epub || book.has_txt"
-                    style="vertical-align:middle"
-                    @command="handleDownload"
-                  >
-                    <el-button type="default" :disabled="!book.has_epub && !book.has_txt">
-                      下载 <el-icon style="margin-left:4px"><ArrowDown /></el-icon>
-                    </el-button>
-                    <template #dropdown>
-                      <el-dropdown-menu>
-                        <el-dropdown-item command="epub" :disabled="!book.has_epub">
-                          .epub 格式
-                        </el-dropdown-item>
-                        <el-dropdown-item command="txt" :disabled="!book.has_txt">
-                          .txt 格式
-                        </el-dropdown-item>
-                      </el-dropdown-menu>
-                    </template>
-                  </el-dropdown>
-                  <el-button
-                    v-else
-                    type="default"
-                    :disabled="true"
-                  >
-                    下载
-                  </el-button>
-                  <el-button @click="$router.push('/shelf')">返回书架</el-button>
-                </div>
-
-                <!-- 抓取进度（aria-live：进度变化由读屏软件播报） -->
-                <div v-if="crawlProgressVisible" style="margin-top:16px" aria-live="polite">
-                  <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-                    <span style="font-size:12px;color:var(--muted)">抓取进度：{{ crawlText }}</span>
-                    <span class="num" style="font-size:12px;color:var(--muted)">{{ crawlPercent }}%</span>
-                  </div>
-                  <div class="progress-bar">
-                    <div class="progress-fill" :style="{ width: crawlPercent + '%' }"></div>
-                  </div>
-                  <!-- 边爬边看 v1.4：抓取中即可阅读已就绪章节 -->
-                  <p v-if="book.status === 'crawling'" style="font-size:12px;color:var(--muted);margin-top:8px">
-                    已抓取章节可立即阅读，无需等待全量完成
-                    <el-button
-                      type="primary"
-                      text
-                      size="small"
-                      :disabled="book.chapter_count === 0"
-                      @click="startReading"
-                    >
-                      立即阅读 →
-                    </el-button>
-                  </p>
-                </div>
               </div>
+            </div>
 
-              <BookCover :title="book.title" :author="book.author" :cover-src="getCoverUrl(book.id, book.has_cover)" />
+            <!-- 功能按钮区：独立一行，位于封面/信息区下方 -->
+            <div class="detail-actions">
+              <!-- 抓取按钮仅对有源站链接的书籍显示；本地导入书（无 source_url）不可抓取 -->
+              <el-button
+                v-if="book.source_url"
+                type="primary"
+                :disabled="book.status === 'crawling'"
+                :loading="crawling"
+                @click="handleCrawl"
+              >
+                {{ book.status === 'done' ? '重新抓取' : '抓取小说内容' }}
+              </el-button>
+              <el-tag v-else type="info" effect="plain" style="align-self:center">本地导入</el-tag>
+              <!-- v1.2: 在线阅读按钮 -->
+              <el-button
+                type="success"
+                :disabled="!book.has_epub && book.chapter_count === 0"
+                @click="startReading"
+              >
+                在线阅读
+              </el-button>
+              <el-dropdown
+                v-if="book.has_epub || book.has_txt"
+                style="vertical-align:middle"
+                @command="handleDownload"
+              >
+                <el-button type="default" :disabled="!book.has_epub && !book.has_txt">
+                  下载 <el-icon style="margin-left:4px"><ArrowDown /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="epub" :disabled="!book.has_epub">
+                      .epub 格式
+                    </el-dropdown-item>
+                    <el-dropdown-item command="txt" :disabled="!book.has_txt">
+                      .txt 格式
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <el-button
+                v-else
+                type="default"
+                :disabled="true"
+              >
+                下载
+              </el-button>
+            </div>
+
+            <!-- 抓取进度（aria-live：进度变化由读屏软件播报） -->
+            <div v-if="crawlProgressVisible" style="margin-top:16px" aria-live="polite">
+              <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                <span style="font-size:12px;color:var(--muted)">抓取进度：{{ crawlText }}</span>
+                <span class="num" style="font-size:12px;color:var(--muted)">{{ crawlPercent }}%</span>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill" :style="{ width: crawlPercent + '%' }"></div>
+              </div>
+              <!-- 边爬边看 v1.4：抓取中即可阅读已就绪章节（阅读入口统一走上方「在线阅读」，不设重复按钮） -->
+              <p v-if="book.status === 'crawling'" style="font-size:12px;color:var(--muted);margin-top:8px">
+                已抓取章节可立即阅读，无需等待全量完成
+              </p>
             </div>
           </div>
 
@@ -218,6 +217,7 @@ import { ArrowDown } from '@element-plus/icons-vue'
 import { useBooksStore } from '@/stores'
 import { formatDate } from '@/utils'
 import { downloadEbook } from '@/utils/download'
+import { prefetchChapters } from '@/utils/chapterCache'
 import type { Book, ChapterSummary } from '@/types'
 import TopNav from '@/components/TopNav.vue'
 import BookCover from '@/components/BookCover.vue'
@@ -293,6 +293,7 @@ onMounted(async () => {
 
   if (cached) {
     // 详情缓存命中：不重复请求（抓取完成/标记等变更已本地同步缓存）
+    preloadForReading(id)
     if (cached.book.status === 'crawling') startCrawlWatch(id)
     if (!cachedSummary) checkAiSummary(id)  // 摘要未缓存时补一次
     return
@@ -303,6 +304,8 @@ onMounted(async () => {
   try {
     const result = await booksStore.fetchBookDetail(id, true)
     if (result) book.value = result
+    // 拿到章节数即启动预载：不依赖后续章节列表 / AI 摘要加载成功（v2.6.3）
+    preloadForReading(id)
     if (result?.status === 'crawling') {
       startCrawlWatch(id)
     }
@@ -317,6 +320,23 @@ onMounted(async () => {
     pageLoading.value = false
   }
 })
+
+/** 进入阅读器前后台预载将要阅读的章节：进度章 + 第 1 章 + 下一章，进入即秒开（v2.6.3，失败静默） */
+function preloadForReading(id: string) {
+  const target = book.value
+  // chapter_count 为已写库章节数（抓取中亦然），只预载已写库章节；
+  // 缓存分支下字段缺失时回退用已加载的章节列表长度
+  const cap = target?.chapter_count || chapters.value.length || 0
+  if (cap <= 0) return
+  getReadingProgress(id)
+    .then(({ data }) => {
+      const last = data.success && data.data?.last_chapter_index ? data.data.last_chapter_index : 1
+      prefetchChapters(id, [last, 1, last + 1].filter(n => n >= 1 && n <= cap))
+    })
+    .catch(() => {
+      prefetchChapters(id, [1, 2].filter(n => n >= 1 && n <= cap))
+    })
+}
 
 /** 检查是否已有 AI 摘要 */
 async function checkAiSummary(bookId: string) {
@@ -674,7 +694,39 @@ function handleDownload(format: 'epub' | 'txt') {
   margin: 0;
 }
 
-.detail-info { flex: 1; }
+.detail-info { flex: 1; min-width: 0; }
+
+/* ── 封面左 / 信息右 / 按钮下 的新布局 ── */
+/* 桌面端：Grid 1fr 1fr 等宽 + stretch 等高，封面与信息区高度一致 */
+.detail-header {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: stretch;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+/* 封面填满 Grid 单元格，高度随信息区自动拉伸 */
+.detail-header .detail-cover,
+.detail-header .detail-cover.book-cover {
+  width: 100%;
+  height: 100%;
+  min-height: 200px;
+  padding: 12% 10% 10%;
+}
+.detail-cover :deep(.cover-title) {
+  font-size: 18px;
+}
+.detail-cover :deep(.cover-author) {
+  font-size: 12px;
+}
+.detail-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  margin-top: 0;
+}
 
 .num {
   font-family: var(--font-mono);
@@ -738,25 +790,49 @@ function handleDownload(format: 'epub' | 'txt') {
   white-space: pre-wrap;
 }
 
+/* ── 返回书架按钮行：靠左对齐 ── */
+.detail-back-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 12px;
+}
+
 /* ── v1.5 移动端适配 ────────────────────────────── */
 @media (max-width: 640px) {
   .card {
     padding: 16px;
   }
 
-  /* 封面在信息下方居中，避免与标题抢宽度 */
+  /* 移动端：封面固定小尺寸，信息区占剩余空间 */
   .detail-header {
-    flex-direction: column-reverse;
-    align-items: center;
-    gap: 20px;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 16px;
   }
-  .detail-info {
-    width: 100%;
+  /* .detail-cover 与 BookCover 根元 .book-cover 为同一元素（Vue class 透传），
+     用双类名提升特异性以覆盖子组件 scoped 样式；:deep() 用于内部子元素。 */
+  .detail-header .detail-cover,
+  .detail-header .detail-cover.book-cover {
+    width: 96px;
+    height: 130px;
+    min-height: 0;
+    aspect-ratio: auto;
+    padding: 10px 9px 9px;
+    flex-shrink: 0;
+  }
+  .detail-cover :deep(.cover-title) {
+    font-size: 13px;
+  }
+  .detail-cover :deep(.cover-author) {
+    font-size: 10px;
   }
 
-  /* 操作按钮组收紧间距、允许换行 */
+  /* 操作按钮组收紧间距、允许换行；上方分隔线保留 */
   .detail-actions {
     gap: 8px;
+    padding-top: 12px;
   }
   .detail-actions :deep(.el-button) {
     margin: 0;

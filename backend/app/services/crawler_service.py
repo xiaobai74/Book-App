@@ -10,11 +10,14 @@
 
 import asyncio
 import base64
+import html as html_lib
 import logging
 import os
 import random
 import re
 import ssl
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
@@ -91,7 +94,15 @@ class CrawlerService:
 
         self._semaphore = asyncio.Semaphore(concurrency)
         self._cookie_jar: httpx.Cookies | None = None
-        self._connectivity_cache: dict[str, ConnectivityResult] = {}
+
+        # 连通性缓存（TTL + LRU）：避免源站状态长期陈旧与内存无限增长。
+        # - TTL 5 分钟：源站故障/恢复需要及时反映；
+        # - LRU 上限 500：长进程运行下的内存上界，防止泄漏。
+        # 存储 (timestamp, result) 元组，timestamp 使用 time.monotonic()，
+        # 不受系统时钟跳变影响。
+        self._connectivity_cache: OrderedDict[str, tuple[float, ConnectivityResult]] = OrderedDict()
+        self._connectivity_cache_max = 500
+        self._connectivity_cache_ttl = 300.0
 
         # SSL 上下文（忽略证书验证）
         # 注意：国内部分小说站证书不规范（自签名/过期/域名不匹配），
@@ -101,6 +112,25 @@ class CrawlerService:
         self._ssl_context.check_hostname = False
         self._ssl_context.verify_mode = ssl.CERT_NONE
 
+        # 共享 HTTP 客户端（连接池复用）
+        # 目的：消除每次请求新建 AsyncClient 带来的 TCP/TLS 握手开销，
+        # 在并发抓取大量章节时显著降低延迟与系统句柄占用。
+        # 注意：
+        #  - 不设置默认 headers，随机 UA / Referer / Cookies 等浏览器指纹
+        #    改为请求级别注入（见 _request_headers），保留反爬伪装能力；
+        #  - 不使用 `async with` 管理，由 close() 在应用 shutdown 时统一释放。
+        self._shared_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(45.0, connect=20.0),
+            limits=httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+            ),
+            follow_redirects=True,
+            max_redirects=5,
+            verify=self._ssl_context,
+            http2=False,
+        )
+
         # 规则引擎
         self._engine = get_rule_engine(rules_file)
 
@@ -108,9 +138,13 @@ class CrawlerService:
     # HTTP 客户端
     # ═══════════════════════════════════════════════════════════
 
-    def _make_client(self, cookies: dict[str, str] | None = None) -> httpx.AsyncClient:
-        """创建 HTTP 客户端，配置浏览器指纹 header。"""
-        headers = {
+    def _request_headers(self, referer: str | None = None) -> dict[str, str]:
+        """生成请求级别的浏览器指纹 headers（含随机 UA / Referer）。
+
+        共享客户端不再携带默认 headers，改为每次请求动态注入，
+        保留原有的反爬伪装能力（每次请求随机 UA + 随机搜索引擎 Referer）。
+        """
+        return {
             "User-Agent": random.choice(_USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.5,en;q=0.3",
@@ -123,28 +157,50 @@ class CrawlerService:
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1",
-            "Referer": random.choice([
+            "Referer": referer or random.choice([
                 "https://www.google.com/",
                 "https://www.bing.com/",
                 "https://www.baidu.com/",
             ]),
         }
 
-        client_cookies = None
-        if cookies:
-            client_cookies = httpx.Cookies()
-            for k, v in cookies.items():
-                client_cookies.set(k, v, domain="")
+    async def close(self) -> None:
+        """关闭共享 HTTP 客户端，释放连接池。
 
-        return httpx.AsyncClient(
-            timeout=httpx.Timeout(45.0, connect=20.0),
-            follow_redirects=True,
-            max_redirects=5,
-            verify=self._ssl_context,
-            http2=False,
-            headers=headers,
-            cookies=client_cookies,
-        )
+        应在应用 lifespan 的 shutdown 阶段调用；幂等（重复调用安全）。
+        """
+        client = getattr(self, "_shared_client", None)
+        if client is not None and not client.is_closed:
+            await client.aclose()
+
+    # ═══════════════════════════════════════════════════════════
+    # 连通性缓存（TTL + LRU）
+    # ═══════════════════════════════════════════════════════════
+
+    def _get_connectivity(self, url: str) -> ConnectivityResult | None:
+        """读取连通性缓存；未命中或已过期返回 None。
+
+        命中时将 key 移到 OrderedDict 末尾实现 LRU 触达更新；
+        过期条目就地删除，避免陈旧数据长期驻留。
+        """
+        item = self._connectivity_cache.get(url)
+        if item is None:
+            return None
+        ts, result = item
+        if time.monotonic() - ts < self._connectivity_cache_ttl:
+            self._connectivity_cache.move_to_end(url)
+            return result
+        # 过期：清理
+        self._connectivity_cache.pop(url, None)
+        return None
+
+    def _set_connectivity(self, url: str, result: ConnectivityResult) -> None:
+        """写入连通性缓存；超过容量上限时按 LRU 淘汰最久未使用条目。"""
+        if url in self._connectivity_cache:
+            del self._connectivity_cache[url]
+        self._connectivity_cache[url] = (time.monotonic(), result)
+        while len(self._connectivity_cache) > self._connectivity_cache_max:
+            self._connectivity_cache.popitem(last=False)
 
     # ═══════════════════════════════════════════════════════════
     # 连接预检
@@ -157,8 +213,9 @@ class CrawlerService:
         因为很多小说网站不支持 HEAD 请求（返回 405/404/403）。
         GET 回退更贴近真实抓取场景，避免误判。
         """
-        if url in self._connectivity_cache:
-            return self._connectivity_cache[url]
+        cached = self._get_connectivity(url)
+        if cached is not None:
+            return cached
 
         result = ConnectivityResult(
             reachable=False,
@@ -170,21 +227,25 @@ class CrawlerService:
 
         # 先尝试 GET（stream 模式，不消耗大量带宽）
         try:
-            async with self._make_client() as client:
-                async with client.stream("GET", url, follow_redirects=True) as resp:
-                    result.reachable = 200 <= resp.status_code < 500
-                    result.status_code = resp.status_code
-                    cl = resp.headers.get("content-length", "0")
-                    result.content_length = int(cl) if cl.isdigit() else 0
-                    if resp.status_code >= 400:
-                        result.error_message = f"源站返回 HTTP {resp.status_code}"
-                        result.suggested_fix = "该页面可能不存在或已被移除，请检查 URL 是否正确"
-                    # 读取第一个 chunk 以确认连接正常
-                    try:
-                        async for _ in resp.aiter_bytes(1):
-                            break
-                    except Exception:
-                        pass
+            async with self._shared_client.stream(
+                "GET",
+                url,
+                headers=self._request_headers(),
+                follow_redirects=True,
+            ) as resp:
+                result.reachable = 200 <= resp.status_code < 500
+                result.status_code = resp.status_code
+                cl = resp.headers.get("content-length", "0")
+                result.content_length = int(cl) if cl.isdigit() else 0
+                if resp.status_code >= 400:
+                    result.error_message = f"源站返回 HTTP {resp.status_code}"
+                    result.suggested_fix = "该页面可能不存在或已被移除，请检查 URL 是否正确"
+                # 读取第一个 chunk 以确认连接正常
+                try:
+                    async for _ in resp.aiter_bytes(1):
+                        break
+                except Exception:
+                    pass
         except httpx.ConnectTimeout:
             result.error_message = "连接源站超时，服务器可能不可达或被防火墙拦截"
             result.suggested_fix = "请检查 source_url 是否正确，或尝试更换其他源站"
@@ -192,13 +253,27 @@ class CrawlerService:
             result.error_message = "读取源站超时，服务器响应过慢"
             result.suggested_fix = "请稍后重试，或检查网络是否正常"
         except httpx.ConnectError as e:
-            result.error_message = f"无法连接到源站: {e}"
-            result.suggested_fix = "请确认是否能够访问该网址（可在浏览器中打开测试），或尝试其他源站"
+            err_str = str(e).lower()
+            dns_failed = any(
+                kw in err_str
+                for kw in (
+                    "getaddrinfo",
+                    "name or service not known",
+                    "nodename nor servname",
+                    "temporary failure in name resolution",
+                )
+            )
+            if dns_failed:
+                result.error_message = "源站域名无法解析（域名可能已失效或被 DNS 屏蔽）"
+                result.suggested_fix = "该源站可能已失效，请返回搜索页换用其它源站重新添加本书"
+            else:
+                result.error_message = f"无法连接到源站: {e}"
+                result.suggested_fix = "请确认是否能够访问该网址（可在浏览器中打开测试），或尝试其他源站"
         except Exception as e:
             result.error_message = f"网络连接异常: {e}"
             result.suggested_fix = "请检查网络连接，或稍后重试"
 
-        self._connectivity_cache[url] = result
+        self._set_connectivity(url, result)
         return result
 
     # ═══════════════════════════════════════════════════════════
@@ -210,14 +285,23 @@ class CrawlerService:
         client: httpx.AsyncClient,
         url: str,
         retries: int | None = None,
+        headers: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
     ) -> str:
-        """带指数退避重试的 GET 请求。"""
+        """带指数退避重试的 GET 请求。
+
+        共享客户端不再携带默认 headers/cookies，改为请求级别传入：
+        - headers 为 None 时自动生成随机浏览器指纹；
+        - cookies 为 None 时不携带。
+        """
         retries = retries if retries is not None else self.max_retries
         last_err = None
 
         for attempt in range(retries):
             try:
-                resp = await client.get(url)
+                # 每次重试重新生成 headers，确保 UA 随机变化（反爬伪装）
+                req_headers = headers if headers is not None else self._request_headers()
+                resp = await client.get(url, headers=req_headers, cookies=cookies)
                 resp.raise_for_status()
                 if resp.cookies:
                     self._cookie_jar = resp.cookies
@@ -468,6 +552,7 @@ class CrawlerService:
         first_page_url: str,
         rule: dict,
         first_html: str,
+        cookies: dict[str, str] | None = None,
     ) -> list[tuple[str, str]]:
         """获取目录所有分页的章节链接。"""
         toc_rule = rule.get("toc", {})
@@ -526,7 +611,7 @@ class CrawlerService:
             page_count += 1
 
             try:
-                html = await self._get(client, current_url)
+                html = await self._get(client, current_url, cookies=cookies)
                 pairs = self._parse_chapter_list(html, current_url, rule)
                 all_pairs.extend(pairs)
                 logger.debug(f"目录翻页 {page_count}: 获取 {len(pairs)} 章, URL={current_url}")
@@ -556,7 +641,6 @@ class CrawlerService:
         """根据规则提取章节正文。"""
         chapter_rule = rule.get("chapter", {})
         content_selector = chapter_rule.get("content", "")
-        title_selector = chapter_rule.get("title", "")
         filter_tag = chapter_rule.get("filterTag", "")
         filter_element = chapter_rule.get("filterElement", "")
         filter_txt = chapter_rule.get("filterTxt", "")
@@ -590,14 +674,6 @@ class CrawlerService:
                         el.decompose()
                 except Exception as e:
                     logger.warning(f"filterElement 选择器无效: {selector} ({e})")
-
-        # ── 提取章节标题 ──────────────────────────
-        chapter_title = ""
-        if title_selector:
-            title_el = self._select_one(soup, title_selector)
-            if title_el:
-                chapter_title = title_el.get_text(strip=True)
-                chapter_title = re.sub(r"\(\d+/\d+\)", "", chapter_title).strip()
 
         # ── 提取正文内容 ──────────────────────────
         content_text = ""
@@ -641,11 +717,50 @@ class CrawlerService:
                     except re.error:
                         logger.warning(f"无效的正则表达式: {pat}")
 
-        # ── 清理多余空行 ──────────────────────────
-        content_text = re.sub(r"\n{3,}", "\n\n", content_text)
-        content_text = re.sub(r"[ \t]{2,}", " ", content_text)
+        # ── 统一文本规范化（去残留标签/解码实体/统一换行与空白/清理脏缩进）──
+        return self._normalize_content(content_text)
 
-        return content_text.strip()
+    def _extract_page_title(self, html: str, rule: dict) -> str:
+        """从章节页 HTML 提取章节标题（去除 (x/y) 页码后缀）。
+
+        分页时用于判断是否已翻到“下一章”：标题变化即到达章节边界。
+        无 chapter.title 选择器或未命中时返回 ""（此时分页保守继续）。
+        """
+        title_selector = rule.get("chapter", {}).get("title", "")
+        if not title_selector:
+            return ""
+        soup = BeautifulSoup(html, "html.parser")
+        title_el = self._select_one(soup, title_selector)
+        if not title_el:
+            return ""
+        title = title_el.get_text(strip=True)
+        return re.sub(r"\(\d+/\d+\)", "", title).strip()
+
+    @staticmethod
+    def _normalize_content(text: str) -> str:
+        """统一规范化正文文本（幂等）。
+
+        修复“抓取后内容未能正确断章”：消除回车符、NBSP（不间断空格）、
+        全角空格、HTML 实体与残留标签，逐行 strip 清除脏缩进，段落统一
+        以单个换行符分隔，使前端按换行分段渲染得到干净段落。
+        """
+        if not text:
+            return ""
+        # ① 去残留标签 → ② 解码实体 → ③ 再去标签（兜底双重编码的 &lt;p&gt; 等）
+        text = re.sub(r"<[^>]+>", "", text)
+        text = html_lib.unescape(text)
+        text = re.sub(r"<[^>]+>", "", text)
+        # ④ 统一换行：\r\n / \r → \n
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        # ⑤ NBSP / 全角空格 → 普通空格
+        text = text.replace("\xa0", " ").replace("\u3000", " ")
+        # ⑥ 逐行 strip，清除段首脏缩进与行尾空白，段落仍以换行分隔
+        text = "\n".join(line.strip() for line in text.split("\n"))
+        # ⑦ 折叠多余空白与空行
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        text = re.sub(r" ?\n ?", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
 
     @staticmethod
     def _extract_text(element, chapter_rule: dict) -> str:
@@ -780,6 +895,10 @@ class CrawlerService:
         if not pagination or not next_selector:
             return content
 
+        # 章节标题基准：翻页时若下一页标题变化，说明已到“下一章”，
+        # 应停止合并（修复 nextPage 在章节末页指向“下一章”导致的多章合并）。
+        base_title = self._extract_page_title(html, rule)
+
         # 翻页拼接
         current_url = chapter_url
         visited_urls: set[str] = {current_url}
@@ -804,7 +923,16 @@ class CrawlerService:
             page_count += 1
 
             try:
-                html = await self._get(client, current_url)
+                next_html = await self._get(client, current_url)
+                # 章节边界守卫：标题变化即进入下一章，停止合并（不并入该页）
+                next_title = self._extract_page_title(next_html, rule)
+                if base_title and next_title and next_title != base_title:
+                    logger.debug(
+                        "分页到达章节边界，停止合并: %s → %s (%s)",
+                        base_title, next_title, current_url,
+                    )
+                    break
+                html = next_html
                 # 翻页时只提取正文，不提取标题
                 page_content = self._parse_chapter_content(html, rule)
                 all_contents.append(page_content)
@@ -815,7 +943,7 @@ class CrawlerService:
 
             await asyncio.sleep(random.uniform(self.min_interval, self.max_interval))
 
-        return "\n\n".join(all_contents)
+        return self._normalize_content("\n\n".join(all_contents))
 
     # ═══════════════════════════════════════════════════════════
     # 公共 API
@@ -837,27 +965,28 @@ class CrawlerService:
         cookies_raw = (rule.get("search") or {}).get("cookies", "")
         cookies = self._parse_cookies(cookies_raw) if cookies_raw else None
 
-        async with self._make_client(cookies=cookies) as client:
-            # 获取第一章页（可能需要拼接 TOC URL）
-            toc_url = self._resolve_toc_url(source_url, rule)
+        # 使用共享客户端（连接池复用）；cookies 按请求级别传入
+        client = self._shared_client
+        # 获取第一章页（可能需要拼接 TOC URL）
+        toc_url = self._resolve_toc_url(source_url, rule)
 
-            try:
-                html = await self._get(client, toc_url)
-            except RuntimeError:
-                # TOC URL 解析后的 URL 返回了 404，回退到原始 source_url
-                if toc_url != source_url:
-                    logger.info(f"TOC URL {toc_url} 不可达，回退到原始 source_url")
-                    toc_url = source_url
-                    html = await self._get(client, toc_url)
-                else:
-                    raise
-            chapters = await self._fetch_toc_pages(client, toc_url, rule, html)
+        try:
+            html = await self._get(client, toc_url, cookies=cookies)
+        except RuntimeError:
+            # TOC URL 解析后的 URL 返回了 404，回退到原始 source_url
+            if toc_url != source_url:
+                logger.info(f"TOC URL {toc_url} 不可达，回退到原始 source_url")
+                toc_url = source_url
+                html = await self._get(client, toc_url, cookies=cookies)
+            else:
+                raise
+        chapters = await self._fetch_toc_pages(client, toc_url, rule, html, cookies=cookies)
 
-            if not chapters:
-                raise RuntimeError(
-                    f"未能从页面解析到章节链接，请确认 {source_url} 是小说目录页"
-                )
-            return chapters
+        if not chapters:
+            raise RuntimeError(
+                f"未能从页面解析到章节链接，请确认 {source_url} 是小说目录页"
+            )
+        return chapters
 
     # ═══════════════════════════════════════════════════════════
     # 书籍元数据提取（v1.7：封面 / 简介 / 分类 / 最新章节 / 更新时间）
@@ -885,8 +1014,7 @@ class CrawlerService:
         cookies = self._parse_cookies(cookies_raw) if cookies_raw else None
 
         try:
-            async with self._make_client(cookies=cookies) as client:
-                html = await self._get(client, source_url)
+            html = await self._get(self._shared_client, source_url, cookies=cookies)
         except Exception as e:  # noqa: BLE001 元数据非关键路径，失败静默降级
             logger.warning(f"获取书籍详情页失败，跳过元数据提取: {source_url} — {e}")
             return meta
@@ -981,23 +1109,23 @@ class CrawlerService:
             parent = os.path.dirname(dest_path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            headers = {"Referer": referer} if referer else None
-            async with self._make_client() as client:
-                resp = await client.get(cover_url, headers=headers)
-                resp.raise_for_status()
-                ctype = resp.headers.get("content-type", "")
-                looks_image = "image" in ctype or cover_url.lower().split("?")[0].endswith(
-                    (".jpg", ".jpeg", ".png", ".webp", ".gif")
-                )
-                if not looks_image:
-                    logger.warning(f"封面响应非图片类型 ({ctype})，跳过: {cover_url}")
-                    return False
-                data = resp.content
-                if not data or len(data) < 100:
-                    logger.warning(f"封面内容过小，疑似无效: {cover_url}")
-                    return False
-                with open(dest_path, "wb") as f:
-                    f.write(data)
+            # 封面下载：保留自定义 Referer（防盗链），其余指纹字段随机生成
+            headers = self._request_headers(referer=referer) if referer else self._request_headers()
+            resp = await self._shared_client.get(cover_url, headers=headers)
+            resp.raise_for_status()
+            ctype = resp.headers.get("content-type", "")
+            looks_image = "image" in ctype or cover_url.lower().split("?")[0].endswith(
+                (".jpg", ".jpeg", ".png", ".webp", ".gif")
+            )
+            if not looks_image:
+                logger.warning(f"封面响应非图片类型 ({ctype})，跳过: {cover_url}")
+                return False
+            data = resp.content
+            if not data or len(data) < 100:
+                logger.warning(f"封面内容过小，疑似无效: {cover_url}")
+                return False
+            with open(dest_path, "wb") as f:
+                f.write(data)
             logger.info(f"封面已下载: {cover_url} -> {dest_path} ({len(data)} bytes)")
             return True
         except Exception as e:  # noqa: BLE001 下载失败不应阻断添加流程
@@ -1069,8 +1197,10 @@ class CrawlerService:
             logger.info("crawl_chapter: 未匹配到预配置规则，使用通用规则")
             rule = self._engine._build_generic_rule(chapter_url)
 
-        async with self._make_client() as client:
-            return await self._crawl_chapter_with_pagination(client, chapter_url, rule)
+        # 使用共享客户端，避免每次新建 AsyncClient 的 TCP/TLS 握手开销
+        return await self._crawl_chapter_with_pagination(
+            self._shared_client, chapter_url, rule,
+        )
 
     async def crawl_book(
         self,
@@ -1117,7 +1247,8 @@ class CrawlerService:
         logger.info(f"正在检查源站连通性: {source_url}")
         connectivity = await self.check_connectivity(source_url)
         if not connectivity.reachable:
-            msg = f"源站不可达: {connectivity.error_message}"
+            netloc = urlparse(source_url).netloc
+            msg = f"源站不可达（{netloc}）: {connectivity.error_message}"
             if connectivity.suggested_fix:
                 msg += f"\n💡 {connectivity.suggested_fix}"
             raise RuntimeError(msg)
@@ -1168,10 +1299,9 @@ class CrawlerService:
 
                 for retry in range(retry_max):
                     try:
-                        async with self._make_client() as client:
-                            content = await self._crawl_chapter_with_pagination(
-                                client, url, rule,
-                            )
+                        content = await self._crawl_chapter_with_pagination(
+                            self._shared_client, url, rule,
+                        )
                         break
                     except Exception as e:
                         if retry < retry_max - 1:

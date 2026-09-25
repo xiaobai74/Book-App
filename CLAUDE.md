@@ -71,14 +71,14 @@ GIT_TERMINAL_PROMPT=0 git push origin master
   - `backend/run.py` + `backend/build.spec` — PyInstaller 打包入口与配置（v2.3，产物 `backend/dist/novel-backend.exe`）
   - `backend/app/config.py` — 双数据库配置：默认 SQLite（`%AppData%/NovelManager/`），`DATABASE_URL` 可覆盖回 MySQL；导出目录也在此统一配置
   - `backend/app/models/` — ORM 模型：User、Book、Chapter、RefreshToken、CrawlSource、ReadingProgress（v1.2 新增）
-  - `backend/app/services/` — 服务层：crawler_service（规则驱动爬虫引擎 + 卷重置感知章节排序 + qsbs base64 正文解码）、search_service（外部源站搜索）、crawl_manager（后台抓取流水线 v5，边爬边看：单章完成即增量写库 + SSE 事件总线实时推送）、epub_service、txt_service、book_service（含标记/阅读进度逻辑 + 双字段搜索，v1.2 扩展）、ai_service（AI 语义搜索/摘要，v1.3 新增）、crawl_source_service（自定义源站 CRUD）
-  - `backend/app/api/v1/ai.py` — AI 功能路由（v1.3 新增）：语义搜索、摘要生成
+  - `backend/app/services/` — 服务层：crawler_service（规则驱动爬虫引擎 + 卷重置感知章节排序 + qsbs base64 正文解码）、search_service（外部源站搜索）、crawl_manager（后台抓取流水线 v5，边爬边看：单章完成即增量写库 + SSE 事件总线实时推送）、epub_service、txt_service、book_service（含标记/阅读进度逻辑 + 双字段搜索，v1.2 扩展）、ai_service（AI 语义搜索/摘要/全网题材推荐 + 摘要内容净化，v1.3 新增、v2.6.1 扩展）、crawl_source_service（自定义源站 CRUD）
+  - `backend/app/api/v1/ai.py` — AI 功能路由（v1.3 新增）：语义搜索、全网题材推荐（v2.6.1）、摘要生成
   - `frontend/src/stores/shelfSearch.ts` — 书架 AI 语义搜索共享状态（v1.9 新增，TopNav 与 SearchView 共用）
   - `backend/rules/` — 规则引擎 + main.json（11 个内置源站规则）+ custom_sources.json（用户自定义规则）；frozen 模式规则从 `_MEIPASS` 读取、自定义规则写入用户数据目录
   - `backend/rules/rule_engine.py` — 规则加载、域名匹配、通用回退规则生成、自定义规则持久化
   - `backend/epub_output/` — 生成的 EPUB 文件（桌面版存用户数据目录）
   - `backend/txt_output/` — 生成的 TXT 文件（桌面版存用户数据目录）
-  - `backend/dify-workflows/` — Dify AI 工作流定义（v1.3 新增）：语义搜索、摘要生成
+  - `backend/dify-workflows/` — Dify AI 工作流定义（v1.3 新增）：语义搜索、摘要生成、全网题材推荐（v2.6.1）
   - `backend/migrations/` — 数据库迁移脚本（v1.2 标记+进度 + v1.3 AI 摘要字段）
 - **`desktop/`** — Windows 桌面版（v2.3）：main.js（拉起后端子进程 + 窗口管理）、preload.js（注入 electronAPI）、build.ps1 / electron-builder 配置（NSIS 安装包）
 - **`deploy/`** — 部署脚本（v2.3）：deploy.sh + nginx 配置 + systemd 服务（移动版云端后端部署）
@@ -349,6 +349,59 @@ v2.6 边爬边看（后台异步爬取 + 实时数据推送），抓取过程中
 - `test/e2e_live_crawl_test.py`：真实源站（香书小说 149 章）端到端验证 10/10 通过——SSE 事件流、抓取中（5/149）章节已写库且可读、`chapter_ready` 数 == 库内章节数
 - 浏览器实测通过：进度实时自增、目录 13→149 实时增长、待抓取章节等待态+就绪自动加载
 - 文档同步：API 文档 v1.4（crawl-stream 章节）、PRD 版本表 v2.6 行
+
+
+## v2.6.1 变更（✅ 已完成）
+
+v2.6.1 AI 全网题材推荐 + AI 摘要内容净化：
+
+### AI 全网题材推荐
+- `backend/app/api/v1/ai.py`：新增 `POST /api/v1/ai/recommend` —— 全网 tab 输入为题材/自然语言描述且 AI 开关开启时，由 LLM 推荐 2-3 本知名小说（title/author/reason）；Dify 未配置或调用失败返回空列表，前端回退关键词直搜
+- `backend/dify-workflows/web-genre-recommend.yml`：Dify Chatflow 模板（Start → LLM → Code extract_json → Answer）
+- 前端：新增 `frontend/src/stores/searchPage.ts`（performWebRecommend / skipWebRecommend / selectRecommendation 状态机）、`SearchView.vue` 全网 tab 推荐卡片面板、`api/books.ts` 的 `aiRecommendBooks`、`lib/queryIntent.ts` 题材词上下文匹配
+- `.env` 新增 `dify_recommend_api_key`（独立 API Key，未配置时功能静默关闭）
+
+### AI 摘要内容净化
+- `backend/app/services/ai_service.py`：`_sanitize_summary_text` 剥离推理型模型（DeepSeek-R1/QwQ 等）输出前置的思维链（其复述任务要求的【】标题会导致 Code 节点截错位置），并移除"（基于样本推断）"等推断性说明字样；存库前统一净化，净化后为空则任务标记 failed
+- `backend/dify-workflows/book-summary.yml`：提示词【情节摘要】改为确定性口吻（不再要求标注"（基于样本推断）"）；Code 节点同步加思维链剥离逻辑
+
+### Dify DSL 修正（三个工作流通用）
+- `mode` 改 `advanced-chat`（带画布的 Chatflow）、节点/边外层 `type` 改 `custom`（节点种类在 `data.type`）、Code 节点 `outputs` 改字典格式 —— 修复导入失败（Missing model_config）与画布空白节点
+
+### 文档同步
+- API 文档 v1.5：补录 `POST /api/v1/ai/recommend` 端点 + ai/summary 净化说明；PRD：新增 AI-003 功能行与 v2.6.1 版本行
+
+
+## v2.7 变更（✅ 已完成）
+
+v2.7 流畅度优化六阶段（搜索/排行榜/阅读器"几乎无等待"），基线与预算见 `scripts/PERF_BASELINE.md`（`scripts/perf_baseline.py` 可重跑回归）：
+
+### 阶段1a 全网搜索流式返回（后端）
+- `search_service.py`：新增 `search_stream()` 异步生成器（meta/source/ping/done 事件，逐源站完成即产出，总时限 20s）；单源站超时收紧为 connect 6s/总 10s；结果仍写共享 LRU+TTL 缓存，命中时按源站分组回放
+- `books.py`：新增 `GET /api/v1/search/external/stream` SSE 端点；同步版 `/search/external` 保留不动（向后兼容）
+
+### 阶段1b 搜索前端缓存 + 本地结果先行（前端）
+- `api/books.ts`：抽出通用 `startSse()` fetch 流消费者；新增 `searchBooksExternalStream()`（连接失败发 `stream_closed`/`stream_error` 由调用方回退同步接口）
+- `stores/books.ts`：全网搜索关键词→结果 LRU（20 条）SWR：缓存命中秒出 + 后台静默刷新原子替换；`searchExternalStream` 流式增量渲染
+- `SearchView.vue`：「书架已有」即时匹配条（本地快照过滤，搜索发起前零等待显示在书架内的书）
+
+### 阶段2 排行榜瘦身 + ETag + 空闲预取
+- `ranking.py`：榜单接口新增 `limit` 参数（默认截断前 200 条，服务端缓存仍全量）；响应挂弱 ETag（条目内容哈希，不含 from_cache 标志）+ `Cache-Control: private, max-age=300`，`If-None-Match` 命中返回 304
+- `ranking_service.py`：新增 `prewarm(db)`（启动时 DB 缓存层回填内存层，只读不抓，表缺失单次提示降级）
+- 前端：`rankingStore.prefetchBoard` + `RankingView` 进入榜单后 `requestIdleCallback` 串行预取该源站其余榜单；`loadSources` 加 in-flight 防抖（修 onMounted+onActivated 同帧双请求）
+
+### 阶段3 阅读器渲染与预取升级
+- `ReaderView.vue`：`.reader-text p` 加 `content-visibility: auto` + `contain-intrinsic-size`（大章上屏/快速滚动零长任务）；预取窗口立即段 [N-1,N+3] 不变，新增空闲段扩到 N+10（翻章即作废上一轮 wide 预取，卸载时清理句柄）
+
+### 阶段4 全局感知流畅度
+- `router/index.ts`：路由 chunk 预取表 + `preloadRoute`/`installRoutePreload`（全局 pointerover/pointerdown 委托，支持 `a[href]` 与 `[data-preload-route]`）；`main.ts` 挂载后安装；`ShelfView.vue` 书卡/阅读按钮加 `data-preload-route`
+- `main.py` lifespan：后台预热任务（SELECT 1 热连接池 + 榜单缓存回填，不阻塞启动握手，shutdown 时 cancel）
+- `BookCover.vue`/`BookCoverSmall.vue`：封面 img 加 `decoding="async" fetchpriority="low"`（让路给数据 XHR）
+
+### 阶段5 回归结论（2026-09-24 重跑 perf_baseline.py）
+- 达标：书架 125ms/304 复用；目录 cold 116ms、304 34ms；正文 cold 109ms；榜单二次 82ms + ETag（此前无 ETag）；全网搜索冷 1626ms 中位（流式接口首结果 <1s，同步版仅作回退）；SSE 流 2.0s 内 8 事件 173 结果；阅读器连续翻章零长任务；路由 hover 预取实测命中
+- 未达标（已知限制）：重启后 `/health` 首请求 2036ms（为启动等待而非请求开销）；榜单冷首进 ~7s——依赖 `ranking_cache` 表，MySQL 环境需手动执行 `backend/migrations/add_ranking_cache.sql`（本次会话未获授权执行迁移）
+- 文档同步：API 文档 v1.6（search/external/stream + 排行榜两接口补录）、PRD 版本表 v2.7 行
 
 
 ## 自定义约束

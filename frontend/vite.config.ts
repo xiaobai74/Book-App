@@ -19,5 +19,17 @@ export default defineConfig({
         changeOrigin: true
       }
     }
+  },
+  build: {
+    // v2.7：第三方依赖分包，避免单一 vendor chunk 过大阻塞首屏加载
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-vue': ['vue', 'vue-router', 'pinia'],
+          'vendor-element': ['element-plus', '@element-plus/icons-vue'],
+          'vendor-utils': ['axios']
+        }
+      }
+    }
   }
 })

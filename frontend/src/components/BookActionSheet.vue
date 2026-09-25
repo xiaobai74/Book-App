@@ -136,14 +136,22 @@ async function toggleMark() {
   }
 }
 
-/** 移出书架：二次确认后删除并关闭弹层 */
+/** 移出书架：二次确认后删除并关闭弹层
+   customClass + appendTo 确保确认框挂在 body 直接子级且层级高于 sheet-mask，
+   搭配 global.css 中 .el-overlay.is-message-box { z-index: 4000 } 避免被遮挡。 */
 function confirmDelete() {
   if (!book.value) return
   const target = book.value
   ElMessageBox.confirm(
     `确定要删除《${target.title}》吗？\`.epub\` 和 \`.txt\` 文件将同时被删除`,
     '确认删除',
-    { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+    {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+      customClass: 'confirm-above-sheet',
+      appendTo: 'body'
+    }
   ).then(async () => {
     try {
       await booksStore.removeBook(target.id)

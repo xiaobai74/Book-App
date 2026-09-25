@@ -38,7 +38,7 @@ async def check_url(url, timeout=15):
 
 SOURCES = [
     ("笔趣阁(biquh)", "https://www.biquh.com/"),
-    ("香书小说", "http://www.xbiqugu.la/"),
+    ("香书小说", "http://www.ibiqugu.net/"),
     ("书海阁小说网", "https://www.shuhaige.net/"),
     ("梦书中文", "http://www.mcxs.info/"),
     ("笔趣阁22", "https://www.22biqu.com/"),

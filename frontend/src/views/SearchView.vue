@@ -189,6 +189,17 @@
 
         <!-- ── 全网搜索 tab ──────────────────────────────── -->
         <template v-if="searchMode === 'web'">
+          <!-- v2.7 阶段1b：书架已有同款？本地秒出（不依赖网络，先于全网结果呈现） -->
+          <div v-if="shelfInstantMatches.length" class="ai-auto-indicator" role="status">
+            <span>书架已有：</span>
+            <router-link
+              v-for="b in shelfInstantMatches"
+              :key="b.id"
+              :to="`/detail/${b.id}`"
+              style="margin-right:10px"
+            >《{{ b.title }}》</router-link>
+          </div>
+
           <!-- 初始状态 -->
           <div v-if="!hasSearched" class="empty-state">
             <div class="empty-icon">
@@ -247,8 +258,8 @@
             </div>
           </div>
 
-          <!-- 加载中 -->
-          <div v-else-if="booksStore.externalLoading" class="empty-state">
+          <!-- 加载中（尚无任何结果时占屏；v2.7 流式：已有结果则直接展示列表） -->
+          <div v-else-if="booksStore.externalLoading && booksStore.externalResults.length === 0" class="empty-state">
             <div class="loading-bar"></div>
             <p style="margin-top:12px">正在搜索 {{ booksStore.sources.length }} 个源站…</p>
           </div>
@@ -291,6 +302,7 @@
             </div>
             <div class="onbg-note" style="margin-bottom:12px;font-size:13px">
               找到 <span class="num" style="font-family:var(--font-mono)">{{ booksStore.externalResults.length }}</span> 条结果
+              <span v-if="booksStore.externalLoading" style="color:var(--muted)">（仍有源站搜索中，结果持续更新…）</span>
             </div>
             <div class="stack" style="gap:12px">
               <div v-for="(item, idx) in booksStore.externalResults" :key="idx" class="external-result-card">
@@ -339,7 +351,8 @@
           </div>
         </template>
 
-        <div style="text-align:center;margin-top:40px">
+        <!-- 底部返回书架：仅书架内 tab 显示（全网 tab 左上角已有同功能按钮，避免重复） -->
+        <div v-if="searchMode !== 'web'" style="text-align:center;margin-top:40px">
           <button type="button" class="back-btn" @click="$router.push('/shelf')">← 返回书架</button>
         </div>
       </div>
@@ -455,6 +468,8 @@ async function loadShelfSnapshot() {
       const { data } = await getBooks(page, pageSize)
       if (data.success && data.data) {
         for (const b of data.data) {
+          // v2.7 阶段1b：轻拷贝标题/作者，供全网搜索 tab「书架已有」秒出提示
+          sp.shelfBriefs.push({ id: b.id, title: b.title, author: b.author })
           if (b.source_url) {
             sp.shelfUrls.push(b.source_url.trim())
           }
@@ -476,6 +491,13 @@ async function loadShelfSnapshot() {
 function isAddedToShelf(sourceUrl: string): boolean {
   return sp.shelfUrls.includes(sourceUrl.trim())
 }
+
+/** v2.7 阶段1b：本地书架关键词秒匹配（零网络、随输入即出），全网结果到达前先行呈现 */
+const shelfInstantMatches = computed(() => {
+  const q = (currentQ.value || searchQuery.value).trim()
+  if (!q || !sp.hasSearched) return []
+  return sp.shelfBriefs.filter(b => b.title.includes(q)).slice(0, 5)
+})
 
 /** 目标 tab 是否已有当前关键词的缓存结果（有则切 tab 不重新搜索） */
 function hasCachedResults(mode: 'shelf' | 'web'): boolean {
@@ -526,7 +548,8 @@ async function doSearch() {
       }
       sp.webRecommendations = []
       // v2.0：全网搜索不再按源站筛选，始终搜索全部源站
-      await booksStore.searchExternal(q)
+      // v2.7 阶段1a：流式搜索，源站逐个返回逐个展示
+      await booksStore.searchExternalStream(q)
       if (!booksStore.externalError) {
         sp.lastWebQuery = q
       }
@@ -542,7 +565,7 @@ async function selectRecommendation(rec: { title: string; author: string; reason
   searchQuery.value = rec.title
   isSearching.value = true
   try {
-    await booksStore.searchExternal(rec.title)
+    await booksStore.searchExternalStream(rec.title)
     if (!booksStore.externalError) {
       sp.lastWebQuery = rec.title
     }
@@ -557,7 +580,7 @@ async function searchWebDirect(q: string) {
   sp.webRecommendSelected = false
   isSearching.value = true
   try {
-    await booksStore.searchExternal(q)
+    await booksStore.searchExternalStream(q)
     if (!booksStore.externalError) {
       sp.lastWebQuery = q
     }
